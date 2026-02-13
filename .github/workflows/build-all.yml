@@ -6,6 +6,9 @@ on:
   release:
     types: [created]
 
+permissions:
+  contents: write
+
 jobs:
   build-python-windows:
     runs-on: windows-latest
@@ -88,7 +91,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: macos-app
-          path: dist/*.app
+          path: dist/*.dmg
 
   release:
     needs: [build-python-windows, build-java-windows, build-macos]
@@ -110,5 +113,5 @@ jobs:
           files: |
             artifacts/**/*.zip
             artifacts/**/*.exe
-            artifacts/**/*.app
+            artifacts/**/*.dmg
           draft: false
