@@ -24,6 +24,7 @@ jobs:
 
       - name: Build Python Windows exe
         run: |
+          if exist "dist" rmdir /s /q dist
           pyinstaller --onedir --name SvnSearch --windowed --add-data "static;static" app.py
         shell: cmd
 
