@@ -82,7 +82,7 @@ jobs:
 
       - name: Create macOS App
         run: |
-          jpackage --input target --main-jar svnsearch-1.0.0.jar --name "SVN-Search" --app-version 1.0.0 --type app --dest dist/
+          jpackage --input target --main-jar svnsearch-1.0.0.jar --name "SVN-Search" --app-version 1.0.0 --type dmg --dest dist/
 
       - name: Upload macOS
         uses: actions/upload-artifact@v4
