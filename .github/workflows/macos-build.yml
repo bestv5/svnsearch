@@ -70,4 +70,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: macos-bundles
-          path: src-tauri/target/release/bundle/macos/*
+          path: |
+            src-tauri/target/release/bundle/macos/**
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/**
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/**
+            src-tauri/target/*-apple-darwin/release/bundle/macos/**
+          if-no-files-found: ignore
