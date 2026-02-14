@@ -67,7 +67,7 @@ jobs:
           $bundlePath = "src-tauri/target/release/bundle/windows"
           $msiPath = "src-tauri/target/release/bundle/msi"
 
-          if (Test-Path $bundlePath -or Test-Path $msiPath) {
+          if ((Test-Path $bundlePath) -or (Test-Path $msiPath)) {
             Write-Host "✓ Bundle directory found."
             Write-Host ""
             Write-Host "Contents:"
