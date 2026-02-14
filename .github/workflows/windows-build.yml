@@ -10,6 +10,8 @@ jobs:
   build-windows:
     runs-on: windows-latest
     env:
+      RUSTUP_HOME: ${{ runner.temp }}\rustup
+      CARGO_HOME: ${{ runner.temp }}\cargo
       CARGO_INCREMENTAL: 0
     steps:
       - name: Checkout
@@ -25,6 +27,29 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+
+      - name: Get Rust toolchain version
+        id: rust-version
+        run: |
+          $raw = (& rustc --version 2>$null).Trim()
+          if ($raw -match 'rustc\s+(\d+\.\d+\.\d+)') {
+            $ver = $matches[1]
+          } else {
+            $ver = "stable-fallback"
+          }
+          Write-Host "Detected rust version: $ver"
+          "toolchain=$ver" | Out-File -Encoding utf8 -NoNewline $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Cache Rust toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.RUSTUP_HOME }}
+            ${{ env.CARGO_HOME }}
+          key: ${{ runner.os }}-rust-toolchain-${{ steps.rust-version.outputs.toolchain }}
+          restore-keys: |
+            ${{ runner.os }}-rust-toolchain-
 
       - name: Install npm dependencies
         run: npm ci
