@@ -1,5 +1,6 @@
 use tauri::Manager;
 use std::env;
+use std::process::Command;
 
 #[cfg(target_os = "macos")]
 pub fn set_autostart(enable: bool) -> Result<(), String> {

@@ -1,6 +1,5 @@
 use rusqlite::{Connection, Result, params};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::path::PathBuf;
