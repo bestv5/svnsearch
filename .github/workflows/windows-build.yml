@@ -6,6 +6,8 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
+    env:
+      CARGO_INCREMENTAL: 0
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,9 +27,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
+            ${{ env.CARGO_HOME }}/registry/index/
+            ${{ env.CARGO_HOME }}/registry/cache/
+            ${{ env.CARGO_HOME }}/git/db/
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
@@ -40,7 +42,8 @@ jobs:
           key: ${{ runner.os }}-cargo-build-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-build-
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-build-release
+            ${{ runner.os }}-
 
       - name: Install npm dependencies
         run: npm ci
@@ -52,12 +55,44 @@ jobs:
         run: npm install -g @tauri-apps/cli
 
       - name: Build Windows bundle
+        id: build
         run: |
+          Write-Host "Starting Tauri build process..."
           npm run tauri:build -- --verbose
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Build failed with exit code $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+          Write-Host "Build completed successfully"
         shell: pwsh
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: true
-          CARGO_INCREMENTAL: 0
+
+      - name: Show build errors if any
+        if: failure() && steps.build.outcome == 'failure'
+        run: |
+          Write-Host "=== Build failed, checking for errors ==="
+          if (Test-Path "src-tauri/target/release") {
+            Write-Host "Contents of release directory:"
+            Get-ChildItem -Path "src-tauri/target/release" -Force | Format-Table -AutoSize
+          }
+        shell: pwsh
+
+      - name: Show full bundle structure
+        if: always()
+        run: |
+          Write-Host "=== Full target directory size and structure ==="
+          if (Test-Path "src-tauri/target") {
+            $size = (Get-ChildItem -Path "src-tauri/target" -Recurse -Force | Measure-Object -Property Length -Sum).Sum / 1MB
+            Write-Host "Total target size: $([Math]::Round($size, 2)) MB"
+            
+            Write-Host ""
+            Write-Host "=== Release directory ==="
+            if (Test-Path "src-tauri/target/release") {
+              Get-ChildItem -Path "src-tauri/target/release" -Force -ErrorAction SilentlyContinue | Format-Table Name, Length -AutoSize
+            }
+          }
+        shell: pwsh
 
       - name: Debug - List target directory structure
         if: always()
