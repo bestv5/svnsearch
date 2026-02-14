@@ -10,8 +10,6 @@ jobs:
   build-windows:
     runs-on: windows-latest
     env:
-      RUSTUP_HOME: ${{ runner.temp }}\rustup
-      CARGO_HOME: ${{ runner.temp }}\cargo
       CARGO_INCREMENTAL: 0
     steps:
       - name: Checkout
@@ -45,8 +43,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ${{ env.RUSTUP_HOME }}
-            ${{ env.CARGO_HOME }}
+            ~/AppData/Local/rustup
+            ~/AppData/Local/cargo
           key: ${{ runner.os }}-rust-toolchain-${{ steps.rust-version.outputs.toolchain }}
           restore-keys: |
             ${{ runner.os }}-rust-toolchain-
