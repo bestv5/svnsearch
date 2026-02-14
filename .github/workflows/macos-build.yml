@@ -30,13 +30,22 @@ jobs:
       - name: Install Tauri CLI
         run: npm install -g @tauri-apps/cli
 
-      - name: Build macOS bundle
+      - name: Add x86_64 target (Intel mac)
         env:
           CARGO_HOME: ${{ runner.temp }}/cargo
         run: |
           set -e
           source $HOME/.cargo/env || true
-          npx --yes tauri build
+          rustup target add x86_64-apple-darwin || true
+
+      - name: Build macOS bundle (Intel x86_64)
+        env:
+          CARGO_HOME: ${{ runner.temp }}/cargo
+        run: |
+          set -e
+          source $HOME/.cargo/env || true
+          # Build Intel (x86_64) macOS bundle
+          npx --yes tauri build --target x86_64-apple-darwin
 
       - name: Upload macOS bundles
         uses: actions/upload-artifact@v4
