@@ -18,9 +18,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Add Windows target
-        run: rustup target add x86_64-pc-windows-msvc
+        with:
+          targets: x86_64-pc-windows-msvc
 
       - name: Cache Cargo registry + git
         uses: actions/cache@v4
@@ -51,22 +50,42 @@ jobs:
         run: npm install -g @tauri-apps/cli
 
       - name: Build Windows bundle
-        run: npm run tauri:build -- --verbose
-        shell: bash
+        run: |
+          npm run tauri:build -- --verbose
+        shell: pwsh
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: true
           CARGO_INCREMENTAL: 0
 
+      - name: Debug - List target directory structure
+        if: always()
+        run: |
+          Write-Host "=== Target directory structure ==="
+          if (Test-Path "src-tauri/target/release/bundle") {
+            Get-ChildItem -Path "src-tauri/target/release/bundle" -Recurse -Force | Select-Object FullName, Length | Format-Table -AutoSize
+          } else {
+            Write-Host "No bundle directory found"
+          }
+          
+          Write-Host ""
+          Write-Host "=== Searching for .exe files ==="
+          Get-ChildItem -Path "src-tauri/target" -Filter "*.exe" -Recurse -Force -ErrorAction SilentlyContinue | Select-Object FullName, Length
+          
+          Write-Host ""
+          Write-Host "=== Searching for .msi files ==="
+          Get-ChildItem -Path "src-tauri/target" -Filter "*.msi" -Recurse -Force -ErrorAction SilentlyContinue | Select-Object FullName, Length
+        shell: pwsh
+
       - name: Check build output
         run: |
-          echo "Checking for build artifacts..."
-          if [ -d "src-tauri/target/release/bundle/windows" ]; then
-            ls -lR src-tauri/target/release/bundle/windows/
-          else
-            echo "ERROR: Bundle directory not found!"
+          if (Test-Path "src-tauri/target/release/bundle/windows") {
+            Write-Host "✓ Windows bundle directory found"
+            Get-ChildItem -Path "src-tauri/target/release/bundle/windows" -Recurse -Force | Select-Object FullName, Length | Format-Table -AutoSize
+          } else {
+            Write-Host "ERROR: Bundle directory not found!"
             exit 1
-          fi
-        shell: bash
+          }
+        shell: pwsh
 
       - name: Upload Windows bundles
         if: success()
