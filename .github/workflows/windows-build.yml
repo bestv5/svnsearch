@@ -34,7 +34,7 @@ jobs:
         env:
           CARGO_HOME: ${{ runner.temp }}/cargo
         run: |
-          set -e
+          $ErrorActionPreference = 'Stop'
           npx --yes tauri build
 
       - name: Upload Windows bundles
