@@ -1,0 +1,22 @@
+{
+  "name": "svnsearch-desktop",
+  "version": "1.0.0",
+  "description": "SVN 快速搜索工具 - 类似 Everything",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "vue": "^3.4.0",
+    "pinia": "^2.1.7"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^1.5.0",
+    "@vitejs/plugin-vue": "^5.0.0",
+    "vite": "^5.0.0"
+  }
+}
