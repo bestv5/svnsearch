@@ -10,9 +10,15 @@ from config import load_config
 class SVNClient:
     def __init__(self, svn_path=None):
         self.svn_path = svn_path or load_config().get('svn_path', 'svn')
+        self.default_timeout = 1800  # 30分钟
+        self.list_timeout = 3600     # 60分钟用于列表操作
+        self.content_timeout = 300    # 5分钟用于文件内容
     
     def _run_command(self, args: List[str], username: str = None, password: str = None, 
-                     timeout: int = 300) -> Tuple[int, str, str]:
+                     timeout: int = None) -> Tuple[int, str, str]:
+        if timeout is None:
+            timeout = self.default_timeout
+        
         cmd = [self.svn_path] + args
         cmd.extend(['--non-interactive', '--trust-server-cert-failures=unknown-ca'])
         
@@ -53,7 +59,7 @@ class SVNClient:
         if recursive:
             args.append('-R')
         
-        returncode, stdout, stderr = self._run_command(args, username, password)
+        returncode, stdout, stderr = self._run_command(args, username, password, self.list_timeout)
         
         if returncode != 0:
             raise Exception(stderr or 'Failed to list directory')
@@ -75,6 +81,7 @@ class SVNClient:
                 
                 commit = entry.find('commit')
                 revision = int(commit.get('revision', 0)) if commit is not None else 0
+                
                 last_modified = None
                 if commit is not None:
                     date_elem = commit.find('date')
@@ -82,6 +89,8 @@ class SVNClient:
                         last_modified = date_elem.text
                 
                 filename = Path(path).name or path
+                if filename.isEmpty() and not path.isEmpty():
+                    filename = path
                 
                 files.append({
                     'path': path,
@@ -100,55 +109,14 @@ class SVNClient:
     def get_file_content(self, url: str, username: str = None, password: str = None) -> Tuple[bytes, str]:
         returncode, stdout, stderr = self._run_command(
             ['cat', url],
-            username, password
+            username, password,
+            self.content_timeout
         )
         
         if returncode != 0:
             raise Exception(stderr or 'Failed to get file content')
         
         return stdout.encode('utf-8', errors='replace'), 'text'
-    
-    def get_file_content_binary(self, url: str, username: str = None, password: str = None) -> Tuple[bytes, str]:
-        cmd = [self.svn_path, 'cat', url, '--non-interactive', '--trust-server-cert-failures=unknown-ca']
-        
-        if username:
-            cmd.extend(['--username', username])
-        if password:
-            cmd.extend(['--password', password])
-        
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                timeout=60
-            )
-            
-            if result.returncode != 0:
-                raise Exception(result.stderr.decode('utf-8', errors='replace') or 'Failed to get file content')
-            
-            content = result.stdout
-            content_type = self._detect_content_type(content)
-            return content, content_type
-        except subprocess.TimeoutExpired:
-            raise Exception('Command timeout')
-    
-    def _detect_content_type(self, content: bytes) -> str:
-        if content.startswith(b'\xff\xd8\xff'):
-            return 'image/jpeg'
-        elif content.startswith(b'\x89PNG'):
-            return 'image/png'
-        elif content.startswith(b'GIF8'):
-            return 'image/gif'
-        elif content.startswith(b'%PDF'):
-            return 'application/pdf'
-        elif content.startswith(b'PK'):
-            return 'application/zip'
-        else:
-            try:
-                content.decode('utf-8')
-                return 'text/plain'
-            except UnicodeDecodeError:
-                return 'application/octet-stream'
     
     def get_info(self, url: str, username: str = None, password: str = None) -> Optional[Dict]:
         returncode, stdout, stderr = self._run_command(
