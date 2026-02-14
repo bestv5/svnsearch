@@ -55,10 +55,22 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
       - name: Build app with Tauri
         run: |
-          npm install -g @tauri-apps/cli
-          npm run tauri:build -- --verbose
+          npx @tauri-apps/cli build --verbose
         shell: pwsh
 
       - name: Verify build artifacts
