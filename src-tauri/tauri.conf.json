@@ -45,7 +45,16 @@
         "certificateThumbprint": null,
         "digestAlgorithm": "sha256",
         "timestampUrl": "",
-        "portable": true
+        "wix": {
+          "language": ["en-US"],
+          "fragmentPath": null,
+          "componentGroupRef": null,
+          "license": null,
+          "enableElevatedUpdateTask": true,
+          "bannerPath": null,
+          "dialogImagePath": null,
+          "skipWebViewInstall": false
+        }
       }
     },
 
