@@ -39,17 +39,20 @@ jobs:
         run: |
           Write-Host "Checking for Windows build artifacts..."
           $bundlePath = "src-tauri/target/release/bundle/windows"
-          
-          if (Test-Path $bundlePath) {
-            Write-Host "✓ Bundle directory found at: $bundlePath"
+          $msiPath = "src-tauri/target/release/bundle/msi"
+
+          if (Test-Path $bundlePath -or Test-Path $msiPath) {
+            Write-Host "✓ Bundle directory found."
             Write-Host ""
             Write-Host "Contents:"
-            Get-ChildItem -Path $bundlePath -Recurse | Format-Table FullName, Length -AutoSize
+            if (Test-Path $bundlePath) {
+              Get-ChildItem -Path $bundlePath -Recurse | Format-Table FullName, Length -AutoSize
+            }
+            if (Test-Path $msiPath) {
+              Get-ChildItem -Path $msiPath -Recurse | Format-Table FullName, Length -AutoSize
+            }
           } else {
             Write-Host "✗ Bundle directory not found!"
-            Write-Host ""
-            Write-Host "Search results for .msi files:"
-            Get-ChildItem -Path "src-tauri/target" -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue | Format-Table FullName, Length
             Write-Host ""
             Write-Host "Release directory contents:"
             if (Test-Path "src-tauri/target/release") {
