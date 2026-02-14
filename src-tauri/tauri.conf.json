@@ -3,7 +3,6 @@
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
     "devPath": "http://localhost:5173",
-    "distDir": "../dist",
     "withGlobalTauri": false
   },
   "package": {
@@ -44,24 +43,24 @@
         "icons/icon.ico"
       ]
     },
-    "systemTray": {
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": true
-    },
+
     "security": {
       "csp": null
     },
-    "windows": {
-      "title": "SVN Search",
-      "width": 800,
-      "height": 600,
-      "resizable": true,
-      "center": true,
-      "decorations": false,
-      "transparent": true,
-      "alwaysOnTop": true,
-      "skipTaskbar": false
-    },
+    "windows": [
+      {
+        "title": "SVN Search",
+        "width": 800,
+        "height": 600,
+        "resizable": true,
+        "center": true,
+        "decorations": true,
+        "transparent": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "visible": true
+      }
+    ],
     "updater": {
       "active": false
     }

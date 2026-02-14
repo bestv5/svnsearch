@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SVN Search Preview</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: rgba(30, 30, 30, 0.95);
+            color: #fff;
+            overflow: hidden;
+        }
+        
+        .app {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .search-box {
+            position: relative;
+            margin-bottom: 20px;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 15px 20px;
+            font-size: 16px;
+            border: 2px solid #444;
+            border-radius: 10px;
+            background: #2a2a2a;
+            color: #fff;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .search-input:focus {
+            border-color: #667eea;
+        }
+
+        .search-input::placeholder {
+            color: #888;
+        }
+
+        .results {
+            max-height: calc(100vh - 120px);
+            overflow-y: auto;
+        }
+
+        .result-item {
+            padding: 12px 15px;
+            border-bottom: 1px solid #333;
+            cursor: pointer;
+            transition: background 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .result-item:hover {
+            background: #3a3a3a;
+        }
+
+        .result-icon {
+            width: 40px;
+            height: 40px;
+            background: #667eea;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            flex-shrink: 0;
+        }
+
+        .result-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .result-name {
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .result-path {
+            font-size: 12px;
+            color: #888;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .result-meta {
+            font-size: 11px;
+            color: #666;
+            margin-top: 2px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
+        }
+
+        .status-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: #1a1a1a;
+            padding: 8px 20px;
+            font-size: 12px;
+            color: #666;
+            border-top: 1px solid #333;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .settings-btn {
+            background: none;
+            border: none;
+            font-size: 16px;
+            cursor: pointer;
+            padding: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <div class="search-box">
+            <input 
+                type="text" 
+                class="search-input" 
+                id="searchInput" 
+                placeholder="搜索文件... (Ctrl+Space)"
+                autofocus
+            >
+        </div>
+        
+        <div class="results" id="results">
+            <div class="empty-state">输入关键词开始搜索</div>
+        </div>
+    </div>
+    
+    <div class="status-bar">
+        <span id="indexStatus">就绪</span>
+        <span style="margin-left: 20px;" id="fileCount">0 文件</span>
+        <button class="settings-btn">⚙️</button>
+    </div>
+
+    <script>
+        const mockFiles = [
+            { id: 1, filename: 'main.rs', path: 'src-tauri/src/main.rs', is_dir: false, size: 1024, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+            { id: 2, filename: 'App.vue', path: 'src/App.vue', is_dir: false, size: 2048, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+            { id: 3, filename: 'package.json', path: 'package.json', is_dir: false, size: 512, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+            { id: 4, filename: 'README.md', path: 'README.md', is_dir: false, size: 3072, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+            { id: 5, filename: 'database.rs', path: 'src-tauri/src/database.rs', is_dir: false, size: 4096, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+            { id: 6, filename: 'index_engine.rs', path: 'src-tauri/src/index_engine.rs', is_dir: false, size: 2048, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+            { id: 7, filename: 'commands.rs', path: 'src-tauri/src/commands.rs', is_dir: false, size: 3072, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+            { id: 8, filename: 'src', path: 'src', is_dir: true, size: 0, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+            { id: 9, filename: 'src-tauri', path: 'src-tauri', is_dir: true, size: 0, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+            { id: 10, filename: 'Cargo.toml', path: 'src-tauri/Cargo.toml', is_dir: false, size: 1024, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+        ];
+
+        const searchInput = document.getElementById('searchInput');
+        const resultsContainer = document.getElementById('results');
+        const fileCountEl = document.getElementById('fileCount');
+
+        fileCountEl.textContent = `${mockFiles.length} 文件`;
+
+        function formatSize(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
+        }
+
+        function renderResults(files) {
+            if (files.length === 0) {
+                resultsContainer.innerHTML = '<div class="empty-state">未找到匹配的文件</div>';
+                return;
+            }
+
+            resultsContainer.innerHTML = files.map(file => `
+                <div class="result-item">
+                    <div class="result-icon">${file.is_dir ? '📁' : '📄'}</div>
+                    <div class="result-info">
+                        <div class="result-name">${file.filename}</div>
+                        <div class="result-path">${file.repo_name}/${file.path}</div>
+                        <div class="result-meta">${formatSize(file.size)}</div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        searchInput.addEventListener('input', (e) => {
+            const query = e.target.value.toLowerCase();
+            if (!query) {
+                resultsContainer.innerHTML = '<div class="empty-state">输入关键词开始搜索</div>';
+                return;
+            }
+
+            const filtered = mockFiles.filter(file => 
+                file.filename.toLowerCase().includes(query) || 
+                file.path.toLowerCase().includes(query)
+            );
+
+            renderResults(filtered);
+        });
+
+        searchInput.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.code === 'Space') {
+                e.preventDefault();
+                searchInput.focus();
+            }
+        });
+
+        searchInput.focus();
+    </script>
+</body>
+</html>

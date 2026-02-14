@@ -13,8 +13,8 @@ export default defineConfig({
   },
   envPrefix: ['VITE_', 'TAURI_'],
   build: {
-    target: process.env.TAURI_PLATFORM == 'windows' ? 'chrome105' : 'safari13',
-    targetDir: '../dist',
+    target: process.env.TAURI_PLATFORM === 'windows' ? 'chrome105' : 'safari13',
+
     emptyOutDir: true,
   },
 })

@@ -40,7 +40,7 @@
         :key="file.id"
         class="result-item"
         @click="openFile(file)"
-        @contextmenu="showContextMenu($event, file)"
+        @contextmenu.prevent="showContextMenu($event, file)"
       >
         <div class="result-icon">
           {{ file.is_dir ? '📁' : '📄' }}
@@ -58,16 +58,16 @@
     <div class="status-bar">
       <span>{{ indexStatus }}</span>
       <span style="margin-left: 20px;">{{ fileCount }} 文件</span>
-      <button @click="showSettings" class="settings-btn">⚙️</button>
+      <button @click="showSettings = true" class="settings-btn">⚙️</button>
     </div>
     
-    <div v-if="showSettingsPanel" class="settings-panel" @click.self="closeSettings">
+    <div v-if="showSettings" class="settings-panel" @click.self="showSettings = false">
       <div class="settings-content" @click.stop>
         <h3>设置</h3>
         
         <div class="setting-item">
           <label>开机自启动</label>
-          <input type="checkbox" v-model="settings.autostart" @change="toggleAutostart">
+          <input type="checkbox" v-model="settings.autostart">
         </div>
         
         <div class="setting-item">
@@ -84,7 +84,7 @@
         </div>
         
         <div class="setting-actions">
-          <button @click="closeSettings" class="btn btn-secondary">关闭</button>
+          <button @click="showSettings = false" class="btn btn-secondary">关闭</button>
         </div>
       </div>
     </div>
@@ -95,27 +95,25 @@
       :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
       @click="closeContextMenu"
     >
-      <div class="context-item" @click="copyPath">复制路径</div>
-      <div class="context-item" @click="copyUrl">复制 URL</div>
-      <div class="context-item" @click="openFolder">打开文件夹</div>
+      <div class="context-item" @click.stop="copyPath">复制路径</div>
+      <div class="context-item" @click.stop="copyUrl">复制 URL</div>
+      <div class="context-item" @click.stop="openFolder">打开文件夹</div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from 'vue'
-import { invoke } from '@tauri-apps/api/tauri'
-import { writeText, readText } from '@tauri-apps/api/clipboard'
+import { ref, onMounted, onUnmounted } from 'vue'
 
 const searchQuery = ref('')
 const results = ref([])
 const loading = ref(false)
-const indexStatus = ref('索引中...')
+const indexStatus = ref('就绪')
 const fileCount = ref(0)
 const searchInput = ref(null)
 const showHistory = ref(false)
 const searchHistory = ref([])
-const showSettingsPanel = ref(false)
+const showSettings = ref(false)
 const contextMenu = ref({ show: false, x: 0, y: 0, file: null })
 const settings = ref({
   autostart: false,
@@ -123,22 +121,38 @@ const settings = ref({
   historySize: 10
 })
 
+const mockFiles = [
+  { id: 1, filename: 'main.rs', path: 'src-tauri/src/main.rs', is_dir: false, size: 1024, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+  { id: 2, filename: 'App.vue', path: 'src/App.vue', is_dir: false, size: 2048, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+  { id: 3, filename: 'package.json', path: 'package.json', is_dir: false, size: 512, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+  { id: 4, filename: 'README.md', path: 'README.md', is_dir: false, size: 3072, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+  { id: 5, filename: 'database.rs', path: 'src-tauri/src/database.rs', is_dir: false, size: 4096, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+  { id: 6, filename: 'index_engine.rs', path: 'src-tauri/src/index_engine.rs', is_dir: false, size: 2048, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+  { id: 7, filename: 'commands.rs', path: 'src-tauri/src/commands.rs', is_dir: false, size: 3072, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+  { id: 8, filename: 'src', path: 'src', is_dir: true, size: 0, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+  { id: 9, filename: 'src-tauri', path: 'src-tauri', is_dir: true, size: 0, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+  { id: 10, filename: 'Cargo.toml', path: 'src-tauri/Cargo.toml', is_dir: false, size: 1024, repo_name: 'svnsearch', repo_url: 'https://github.com/example/svnsearch' },
+]
+
 let searchTimeout = null
 
 const handleSearch = () => {
   clearTimeout(searchTimeout)
-  searchTimeout = setTimeout(async () => {
+  searchTimeout = setTimeout(() => {
     if (searchQuery.value.trim()) {
       loading.value = true
       showHistory.value = false
-      try {
-        results.value = await invoke('search_files', { query: searchQuery.value })
+      
+      setTimeout(() => {
+        const query = searchQuery.value.toLowerCase()
+        results.value = mockFiles.filter(file => 
+          file.filename.toLowerCase().includes(query) || 
+          file.path.toLowerCase().includes(query)
+        )
+        
         addToHistory(searchQuery.value)
-      } catch (error) {
-        console.error('Search error:', error)
-        results.value = []
-      }
-      loading.value = false
+        loading.value = false
+      }, 300)
     } else {
       results.value = []
     }
@@ -158,37 +172,33 @@ const selectHistory = (item) => {
   handleSearch()
 }
 
-const showHistoryList = () => {
-  showHistory.value = true
+const openFile = (file) => {
+  const url = `${file.repo_url}/${file.path}`
+  window.open(url, '_blank')
 }
 
-const openFile = async (file) => {
-  const fullUrl = `${file.repo_url}/${file.path}`
-  window.open(fullUrl, '_blank')
-}
-
-const copyPath = async () => {
+const copyPath = () => {
   if (contextMenu.value.file) {
     const path = `${contextMenu.value.file.repo_name}/${contextMenu.value.file.path}`
-    await writeText(path)
+    navigator.clipboard.writeText(path)
     closeContextMenu()
   }
 }
 
-const copyUrl = async () => {
+const copyUrl = () => {
   if (contextMenu.value.file) {
     const url = `${contextMenu.value.file.repo_url}/${contextMenu.value.file.path}`
-    await writeText(url)
+    navigator.clipboard.writeText(url)
     closeContextMenu()
   }
 }
 
-const openFolder = async () => {
+const openFolder = () => {
   if (contextMenu.value.file) {
     const path = contextMenu.value.file.path
     const folderPath = path.substring(0, path.lastIndexOf('/'))
-    const fullUrl = `${contextMenu.value.file.repo_url}/${folderPath}`
-    window.open(fullUrl, '_blank')
+    const url = `${contextMenu.value.file.repo_url}/${folderPath}`
+    window.open(url, '_blank')
     closeContextMenu()
   }
 }
@@ -205,22 +215,6 @@ const showContextMenu = (event, file) => {
 
 const closeContextMenu = () => {
   contextMenu.value.show = false
-}
-
-const showSettings = () => {
-  showSettingsPanel.value = true
-}
-
-const closeSettings = () => {
-  showSettingsPanel.value = false
-}
-
-const toggleAutostart = async () => {
-  try {
-    await invoke('toggle_autostart', { enable: settings.value.autostart })
-  } catch (error) {
-    console.error('Autostart error:', error)
-  }
 }
 
 const changeTheme = () => {
@@ -240,15 +234,6 @@ const formatTime = (time) => {
   if (!time) return '-'
   const date = new Date(time)
   return date.toLocaleString('zh-CN')
-}
-
-const updateStatus = async () => {
-  try {
-    fileCount.value = await invoke('get_index_status')
-    indexStatus.value = '就绪'
-  } catch (error) {
-    console.error('Status error:', error)
-  }
 }
 
 const loadSettings = () => {
@@ -272,14 +257,14 @@ const handleKeyDown = (e) => {
     searchInput.value?.focus()
   }
   if (e.key === 'Escape') {
-    closeSettings()
+    showSettings.value = false
     closeContextMenu()
   }
 }
 
 const handleClickOutside = (e) => {
-  if (showSettingsPanel.value && !e.target.closest('.settings-panel')) {
-    closeSettings()
+  if (showSettings.value && !e.target.closest('.settings-panel')) {
+    showSettings.value = false
   }
   if (contextMenu.value.show && !e.target.closest('.context-menu')) {
     closeContextMenu()
@@ -288,7 +273,7 @@ const handleClickOutside = (e) => {
 
 onMounted(() => {
   loadSettings()
-  updateStatus()
+  fileCount.value = mockFiles.length
   window.addEventListener('keydown', handleKeyDown)
   window.addEventListener('click', handleClickOutside)
   searchInput.value?.focus()
@@ -299,10 +284,6 @@ onUnmounted(() => {
   window.removeEventListener('click', handleClickOutside)
   clearTimeout(searchTimeout)
 })
-
-watch(settings, (newSettings) => {
-  localStorage.setItem('settings', JSON.stringify(newSettings))
-}, { deep: true })
 </script>
 
 <style scoped>
