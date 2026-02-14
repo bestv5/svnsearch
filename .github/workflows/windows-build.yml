@@ -23,103 +23,38 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Cache Cargo registry + git
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry/index/
-            ${{ env.CARGO_HOME }}/registry/cache/
-            ${{ env.CARGO_HOME }}/git/db/
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-            ${{ runner.os }}-cargo-
-
-      - name: Cache Cargo build
-        uses: actions/cache@v4
-        with:
-          path: src-tauri/target
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-build-
-            ${{ runner.os }}-cargo-build-release
-            ${{ runner.os }}-
-
       - name: Install npm dependencies
         run: npm ci
 
       - name: Build frontend
         run: npm run build
 
-      - name: Install Tauri CLI
-        run: npm install -g @tauri-apps/cli
-
-      - name: Build Windows bundle
-        id: build
+      - name: Build app with Tauri
         run: |
-          Write-Host "Starting Tauri build process..."
+          npm install -g @tauri-apps/cli
           npm run tauri:build -- --verbose
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "::error::Build failed with exit code $LASTEXITCODE"
-            exit $LASTEXITCODE
-          }
-          Write-Host "Build completed successfully"
-        shell: pwsh
-        env:
-          CARGO_NET_GIT_FETCH_WITH_CLI: true
-
-      - name: Show build errors if any
-        if: failure() && steps.build.outcome == 'failure'
-        run: |
-          Write-Host "=== Build failed, checking for errors ==="
-          if (Test-Path "src-tauri/target/release") {
-            Write-Host "Contents of release directory:"
-            Get-ChildItem -Path "src-tauri/target/release" -Force | Format-Table -AutoSize
-          }
         shell: pwsh
 
-      - name: Show full bundle structure
-        if: always()
+      - name: Verify build artifacts
         run: |
-          Write-Host "=== Full target directory size and structure ==="
-          if (Test-Path "src-tauri/target") {
-            $size = (Get-ChildItem -Path "src-tauri/target" -Recurse -Force | Measure-Object -Property Length -Sum).Sum / 1MB
-            Write-Host "Total target size: $([Math]::Round($size, 2)) MB"
-            
+          Write-Host "Checking for Windows build artifacts..."
+          $bundlePath = "src-tauri/target/release/bundle/windows"
+          
+          if (Test-Path $bundlePath) {
+            Write-Host "✓ Bundle directory found at: $bundlePath"
             Write-Host ""
-            Write-Host "=== Release directory ==="
+            Write-Host "Contents:"
+            Get-ChildItem -Path $bundlePath -Recurse | Format-Table FullName, Length -AutoSize
+          } else {
+            Write-Host "✗ Bundle directory not found!"
+            Write-Host ""
+            Write-Host "Search results for .msi files:"
+            Get-ChildItem -Path "src-tauri/target" -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue | Format-Table FullName, Length
+            Write-Host ""
+            Write-Host "Release directory contents:"
             if (Test-Path "src-tauri/target/release") {
-              Get-ChildItem -Path "src-tauri/target/release" -Force -ErrorAction SilentlyContinue | Format-Table Name, Length -AutoSize
+              Get-ChildItem -Path "src-tauri/target/release" -Force | Format-Table Name, Length
             }
-          }
-        shell: pwsh
-
-      - name: Debug - List target directory structure
-        if: always()
-        run: |
-          Write-Host "=== Target directory structure ==="
-          if (Test-Path "src-tauri/target/release/bundle") {
-            Get-ChildItem -Path "src-tauri/target/release/bundle" -Recurse -Force | Select-Object FullName, Length | Format-Table -AutoSize
-          } else {
-            Write-Host "No bundle directory found"
-          }
-          
-          Write-Host ""
-          Write-Host "=== Searching for .exe files ==="
-          Get-ChildItem -Path "src-tauri/target" -Filter "*.exe" -Recurse -Force -ErrorAction SilentlyContinue | Select-Object FullName, Length
-          
-          Write-Host ""
-          Write-Host "=== Searching for .msi files ==="
-          Get-ChildItem -Path "src-tauri/target" -Filter "*.msi" -Recurse -Force -ErrorAction SilentlyContinue | Select-Object FullName, Length
-        shell: pwsh
-
-      - name: Check build output
-        run: |
-          if (Test-Path "src-tauri/target/release/bundle/windows") {
-            Write-Host "✓ Windows bundle directory found"
-            Get-ChildItem -Path "src-tauri/target/release/bundle/windows" -Recurse -Force | Select-Object FullName, Length | Format-Table -AutoSize
-          } else {
-            Write-Host "ERROR: Bundle directory not found!"
             exit 1
           }
         shell: pwsh
