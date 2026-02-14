@@ -33,7 +33,6 @@
     },
     "bundle": {
       "active": true,
-      "targets": ["windows"],
       "identifier": "com.svnsearch.app",
       "icon": [
         "icons/32x32.png",
