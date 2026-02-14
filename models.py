@@ -82,6 +82,15 @@ class Database:
             conn.execute('DELETE FROM repositories WHERE id = ?', (repo_id,))
             conn.commit()
     
+    def update_repository(self, repo_id, name, url, username=None, password=None):
+        with self.get_connection() as conn:
+            conn.execute('''
+                UPDATE repositories 
+                SET name = ?, url = ?, username = ?, password = ?
+                WHERE id = ?
+            ''', (name, url, username, password, repo_id))
+            conn.commit()
+    
     def update_repo_time(self, repo_id):
         with self.get_connection() as conn:
             conn.execute(

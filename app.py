@@ -91,6 +91,24 @@ def delete_repository(repo_id):
     db.delete_repository(repo_id)
     return jsonify({'success': True})
 
+@app.route('/api/repositories/<int:repo_id>', methods=['PUT'])
+def update_repository(repo_id):
+    data = request.json
+    name = data.get('name')
+    url = data.get('url')
+    username = data.get('username')
+    password = data.get('password')
+    
+    if not name or not url:
+        return jsonify({'success': False, 'error': 'Name and URL are required'}), 400
+    
+    success, message = svn_client.test_connection(url, username, password)
+    if not success:
+        return jsonify({'success': False, 'error': f'Connection failed: {message}'}), 400
+    
+    db.update_repository(repo_id, name, url, username, password)
+    return jsonify({'success': True})
+
 @app.route('/api/repositories/<int:repo_id>/index', methods=['POST'])
 def index_repository(repo_id):
     result = index_service.index_repository(repo_id)

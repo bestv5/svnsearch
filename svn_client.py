@@ -89,7 +89,7 @@ class SVNClient:
                         last_modified = date_elem.text
                 
                 filename = Path(path).name or path
-                if filename.isEmpty() and not path.isEmpty():
+                if not filename and path:
                     filename = path
                 
                 files.append({

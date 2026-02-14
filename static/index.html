@@ -486,7 +486,10 @@
                         <label>密码（可选）</label>
                         <input type="password" id="repo-password" placeholder="SVN 密码">
                     </div>
-                    <button type="submit" class="btn btn-primary">添加仓库</button>
+                    <div style="display: flex; gap: 10px;">
+                        <button type="submit" class="btn btn-primary">添加仓库</button>
+                        <button type="button" class="btn btn-secondary" id="cancel-edit" onclick="resetRepoForm()" style="display: none;">取消编辑</button>
+                    </div>
                 </form>
             </div>
             
@@ -736,6 +739,7 @@
                             <div id="status-${r.id}"></div>
                         </div>
                         <div class="repo-card-actions">
+                            <button class="btn btn-secondary" onclick="editRepo(${r.id})">编辑</button>
                             <button class="btn btn-primary" onclick="indexRepo(${r.id})">更新索引</button>
                             <button class="btn btn-danger" onclick="deleteRepo(${r.id})">删除</button>
                         </div>
@@ -770,24 +774,35 @@
             };
             
             try {
-                const response = await fetch('/api/repositories', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data)
-                });
+                let response;
+                if (editingRepoId) {
+                    response = await fetch(`/api/repositories/${editingRepoId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data)
+                    });
+                } else {
+                    response = await fetch('/api/repositories', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data)
+                    });
+                }
                 
                 const result = await response.json();
                 
                 if (result.success) {
-                    alert('仓库添加成功！点击"更新索引"开始索引文件。');
+                    const message = editingRepoId ? '仓库更新成功！' : '仓库添加成功！点击"更新索引"开始索引文件。';
+                    alert(message);
                     e.target.reset();
+                    resetRepoForm();
                     loadRepos();
                     loadStats();
                 } else {
-                    alert('添加失败: ' + result.error);
+                    alert(editingRepoId ? '更新失败: ' + result.error : '添加失败: ' + result.error);
                 }
             } catch (error) {
-                alert('添加失败: ' + error.message);
+                alert(editingRepoId ? '更新失败: ' + error.message : '添加失败: ' + error.message);
             }
         });
         
@@ -842,6 +857,62 @@
                 loadStats();
             } catch (error) {
                 alert('删除失败: ' + error.message);
+            }
+        }
+        
+        let editingRepoId = null;
+        
+        async function editRepo(repoId) {
+            try {
+                const response = await fetch('/api/repositories');
+                const repos = await response.json();
+                const repo = repos.find(r => r.id === repoId);
+                
+                if (!repo) {
+                    alert('仓库不存在');
+                    return;
+                }
+                
+                document.getElementById('repo-name').value = repo.name;
+                document.getElementById('repo-url').value = repo.url;
+                document.getElementById('repo-username').value = repo.username || '';
+                document.getElementById('repo-password').value = repo.password || '';
+                
+                editingRepoId = repoId;
+                
+                const formTitle = document.querySelector('#repo-panel .config-section h3');
+                formTitle.textContent = '编辑 SVN 仓库';
+                
+                const submitBtn = document.querySelector('#add-repo-form button[type="submit"]');
+                submitBtn.textContent = '保存修改';
+                
+                const cancelBtn = document.getElementById('cancel-edit');
+                if (cancelBtn) {
+                    cancelBtn.style.display = 'inline-block';
+                }
+                
+                showPanel('repo-panel');
+            } catch (error) {
+                alert('加载仓库信息失败: ' + error.message);
+            }
+        }
+        
+        function resetRepoForm() {
+            document.getElementById('repo-name').value = '';
+            document.getElementById('repo-url').value = '';
+            document.getElementById('repo-username').value = '';
+            document.getElementById('repo-password').value = '';
+            editingRepoId = null;
+            
+            const formTitle = document.querySelector('#repo-panel .config-section h3');
+            formTitle.textContent = '添加 SVN 仓库';
+            
+            const submitBtn = document.querySelector('#add-repo-form button[type="submit"]');
+            submitBtn.textContent = '添加仓库';
+            
+            const cancelBtn = document.getElementById('cancel-edit');
+            if (cancelBtn) {
+                cancelBtn.style.display = 'none';
             }
         }
         
