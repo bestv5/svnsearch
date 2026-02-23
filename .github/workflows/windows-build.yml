@@ -104,5 +104,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-bundles
-          path: src-tauri/target/release/bundle/windows/
-          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/windows/**
+            src-tauri/target/release/bundle/msi/**
+          if-no-files-found: ignore
