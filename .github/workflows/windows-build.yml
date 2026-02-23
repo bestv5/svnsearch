@@ -21,6 +21,16 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
+      - name: Cache Rust toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup
+            ~/.cargo
+          key: ${{ runner.os }}-rust-toolchain-stable
+          restore-keys: |
+            ${{ runner.os }}-rust-toolchain-
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -38,16 +48,6 @@ jobs:
           Write-Host "Detected rust version: $ver"
           "toolchain=$ver" | Out-File -Encoding utf8 -NoNewline $env:GITHUB_OUTPUT
         shell: pwsh
-
-      - name: Cache Rust toolchain
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/AppData/Local/rustup
-            ~/AppData/Local/cargo
-          key: ${{ runner.os }}-rust-toolchain-${{ steps.rust-version.outputs.toolchain }}
-          restore-keys: |
-            ${{ runner.os }}-rust-toolchain-
 
       - name: Install npm dependencies
         run: npm ci
