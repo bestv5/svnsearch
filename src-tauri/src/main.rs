@@ -49,8 +49,13 @@ fn main() {
             let db_path = app_data_dir.join("svnsearch.db");
             info!("Database path: {:?}", db_path);
             
-            let db = database::Database::new(db_path.to_str().unwrap())
-                .expect("Failed to initialize database");
+            let db = match database::Database::new(db_path.to_str().unwrap()) {
+                Ok(db) => db,
+                Err(e) => {
+                    error!("Failed to initialize database: {}", e);
+                    return Err(Box::new(e));
+                }
+            };
             
             info!("Database initialized");
             
