@@ -13,11 +13,25 @@ mod autostart;
 type AppState = Arc<Mutex<Option<index_engine::IndexEngine>>>;
 
 fn main() {
+    let file_appender = tracing_appender::rolling::daily(
+        std::env::var("LOCALAPPDATA")
+            .map(|p| std::path::PathBuf::from(p).join("SVN Search").join("logs"))
+            .unwrap_or_else(|_| std::path::PathBuf::from("logs")),
+        "svnsearch",
+    );
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    
     tracing_subscriber::fmt()
+        .with_writer(non_blocking)
+        .with_ansi(false)
         .with_max_level(tracing::Level::INFO)
         .init();
     
     info!("Starting SVN Search application");
+    
+    std::panic::set_hook(Box::new(|panic_info| {
+        error!("PANIC: {}", panic_info);
+    }));
     
     let result = tauri::Builder::default()
         .setup(|app| {
