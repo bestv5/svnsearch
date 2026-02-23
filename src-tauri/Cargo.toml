@@ -3,6 +3,9 @@ name = "svnsearch-desktop"
 version = "1.0.0"
 edition = "2021"
 
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-Clink-args=-subsystem:windows"]
+
 [build-dependencies]
 tauri-build = { version = "1.5", features = [] }
 
