@@ -37,10 +37,15 @@ fn main() {
             let db = database::Database::new(db_path.to_str().unwrap())
                 .expect("Failed to initialize database");
             
+            info!("Database initialized");
+            
             let index_engine = index_engine::IndexEngine::new(db);
+            info!("Index engine created");
+            
             let state = std::sync::Arc::new(std::sync::Mutex::new(Some(index_engine)));
             
             app.manage(state.clone());
+            info!("State managed");
             
             info!("Setup complete");
             Ok(())
