@@ -77,8 +77,9 @@ jobs:
           Write-Host "Checking for Windows build artifacts..."
           $bundlePath = "src-tauri/target/release/bundle/windows"
           $msiPath = "src-tauri/target/release/bundle/msi"
+          $releasePath = "src-tauri/target/release"
 
-          if ((Test-Path $bundlePath) -or (Test-Path $msiPath)) {
+          if ((Test-Path $bundlePath) -or (Test-Path $msiPath) -or (Test-Path $releasePath)) {
             Write-Host "✓ Bundle directory found."
             Write-Host ""
             Write-Host "Contents:"
@@ -87,6 +88,11 @@ jobs:
             }
             if (Test-Path $msiPath) {
               Get-ChildItem -Path $msiPath -Recurse | Format-Table FullName, Length -AutoSize
+            }
+            if (Test-Path $releasePath) {
+              Write-Host ""
+              Write-Host "Release executables:"
+              Get-ChildItem -Path $releasePath -Filter "*.exe" | Format-Table FullName, Length -AutoSize
             }
           } else {
             Write-Host "✗ Bundle directory not found!"
@@ -99,12 +105,41 @@ jobs:
           }
         shell: pwsh
 
+      - name: Create portable zip
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $releaseDir = "src-tauri/target/release"
+          if (-not (Test-Path $releaseDir)) {
+            Write-Error "Release directory not found: $releaseDir"
+          }
+
+          $exe = Get-ChildItem $releaseDir -Filter "*.exe" | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "No Windows executable (*.exe) found in $releaseDir"
+          }
+
+          Write-Host "Found executable: $($exe.FullName)"
+
+          $outDir = "dist"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+          $zipPath = Join-Path $outDir "svnsearch-windows-portable.zip"
+          if (Test-Path $zipPath) {
+            Remove-Item $zipPath -Force
+          }
+
+          Compress-Archive -Path $exe.FullName -DestinationPath $zipPath -Force
+          Write-Host "Created portable archive at $zipPath"
+        shell: pwsh
+
       - name: Upload Windows bundles
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-bundles
+          name: windows-builds
           path: |
             src-tauri/target/release/bundle/windows/**
             src-tauri/target/release/bundle/msi/**
+            dist/svnsearch-windows-portable.zip
           if-no-files-found: ignore
