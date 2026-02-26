@@ -133,13 +133,11 @@ jobs:
           Write-Host "Created portable archive at $zipPath"
         shell: pwsh
 
-      - name: Upload Windows bundles
+      - name: Upload Windows portable bundle
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-builds
+          name: windows-portable
           path: |
-            src-tauri/target/release/bundle/windows/**
-            src-tauri/target/release/bundle/msi/**
             dist/svnsearch-windows-portable.zip
           if-no-files-found: ignore
