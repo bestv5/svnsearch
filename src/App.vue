@@ -37,7 +37,10 @@
       <!-- 状态栏 -->
       <div class="status-bar">
         <span v-if="errorMessage" class="error">{{ errorMessage }}</span>
-        <span v-else-if="isLoading">正在获取文件列表...</span>
+        <span v-else-if="isLoading">正在获取文件列表...（约 {{ progress }}% ）</span>
+        <div v-if="isLoading" class="progress-bar">
+          <div class="progress-inner" :style="{ width: progress + '%' }"></div>
+        </div>
         <span v-else-if="searchQuery">找到 {{ filteredFiles.length }} 个结果</span>
         <span v-else-if="fileCount > 0">就绪</span>
       </div>
@@ -112,6 +115,15 @@
               <button 
                 class="btn-secondary"
                 type="button"
+                @click="clearIndex"
+                :disabled="isLoading || fileCount === 0"
+              >
+                清空索引
+              </button>
+
+              <button 
+                class="btn-secondary"
+                type="button"
                 @click="saveCurrentAsProfile"
                 :disabled="isLoading"
               >
@@ -156,7 +168,10 @@
 
       <div class="status-bar">
         <span v-if="errorMessage" class="error">{{ errorMessage }}</span>
-        <span v-else-if="isLoading">正在获取文件列表...</span>
+        <span v-else-if="isLoading">正在获取文件列表...（约 {{ progress }}% ）</span>
+        <div v-if="isLoading" class="progress-bar">
+          <div class="progress-inner" :style="{ width: progress + '%' }"></div>
+        </div>
         <span v-else-if="fileCount > 0">已索引 {{ fileCount }} 个文件</span>
       </div>
     </div>
@@ -176,6 +191,7 @@ const isLoading = ref(false)
 const errorMessage = ref('')
 const fileCount = ref(0)
 const searchQuery = ref('')
+const progress = ref(0)
 
 // 页面视图：search / settings
 const currentView = ref('search')
@@ -190,6 +206,7 @@ const STORAGE_SVN_PATH_KEY = 'svnsearch_svn_path'
 const profiles = ref([])
 const selectedProfileId = ref(null)
 let unlistenOpenSettings = null
+let progressTimer = null
 
 // SVN 路径配置
 const svnPath = ref('')
@@ -279,6 +296,10 @@ onUnmounted(() => {
   if (unlistenOpenSettings) {
     unlistenOpenSettings()
   }
+  if (progressTimer) {
+    clearInterval(progressTimer)
+    progressTimer = null
+  }
 })
 
 watch(
@@ -354,16 +375,44 @@ function goBackToSearch() {
   currentView.value = 'search'
 }
 
+// 清空索引结果
+function clearIndex() {
+  allFiles.value = []
+  filteredFiles.value = []
+  fileCount.value = 0
+  searchQuery.value = ''
+  errorMessage.value = ''
+  progress.value = 0
+}
+
 // 索引仓库
 async function indexRepository() {
   if (!svnUrl.value) return
   
   isLoading.value = true
+  progress.value = 0
   errorMessage.value = ''
   allFiles.value = []
   filteredFiles.value = []
   fileCount.value = 0
   searchQuery.value = ''
+
+  if (progressTimer) {
+    clearInterval(progressTimer)
+    progressTimer = null
+  }
+
+  // 伪进度条：请求过程中缓慢增加到 90%
+  progressTimer = setInterval(() => {
+    if (!isLoading.value) {
+      clearInterval(progressTimer)
+      progressTimer = null
+      return
+    }
+    if (progress.value < 90) {
+      progress.value += 1
+    }
+  }, 200)
   
   try {
     const files = await invoke('fetch_svn_files', {
@@ -380,6 +429,11 @@ async function indexRepository() {
     errorMessage.value = error.toString()
   } finally {
     isLoading.value = false
+    progress.value = 100
+    if (progressTimer) {
+      clearInterval(progressTimer)
+      progressTimer = null
+    }
   }
 }
 
@@ -755,5 +809,20 @@ body {
 
 .status-bar .error {
   color: #f87171;
+}
+
+.progress-bar {
+  margin-top: 6px;
+  width: 100%;
+  height: 4px;
+  background: #111827;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.progress-inner {
+  height: 100%;
+  background: linear-gradient(90deg, #4ade80, #22c55e);
+  transition: width 0.2s ease-out;
 }
 </style>

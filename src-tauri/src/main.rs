@@ -26,6 +26,21 @@ fn check_svn(svn_path: Option<String>) -> Result<bool, String> {
     }
 }
 
+/// 根据当前平台解码 SVN 命令输出，解决 Windows 下中文乱码问题
+fn decode_svn_text(bytes: &[u8]) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        use encoding_rs::GBK;
+        let (cow, _, _) = GBK.decode(bytes);
+        cow.to_string()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        String::from_utf8_lossy(bytes).to_string()
+    }
+}
+
 /// 获取 SVN 远程文件列表
 #[tauri::command]
 fn fetch_svn_files(
@@ -68,13 +83,13 @@ fn fetch_svn_files(
         .map_err(|e| format!("执行 SVN 命令失败: {}", e))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = decode_svn_text(&output.stderr);
 
         // 尝试带密码认证
         if stderr.contains("Authentication failed") || stderr.contains("Could not authenticate") {
             if let (Some(user), Some(pass)) = (&username, &password) {
                 if !user.is_empty() && !pass.is_empty() {
-                    let mut retry_args = vec![
+                    let retry_args = vec![
                         "ls".to_string(),
                         "-R".to_string(),
                         "--non-interactive".to_string(),
@@ -91,11 +106,10 @@ fn fetch_svn_files(
                         .map_err(|e| format!("重试 SVN 命令失败: {}", e))?;
 
                     if retry_output.status.success() {
-                        return parse_svn_output(
-                            String::from_utf8_lossy(&retry_output.stdout).to_string(),
-                        );
+                        let stdout = decode_svn_text(&retry_output.stdout);
+                        return parse_svn_output(stdout);
                     } else {
-                        let retry_stderr = String::from_utf8_lossy(&retry_output.stderr);
+                        let retry_stderr = decode_svn_text(&retry_output.stderr);
                         return Err(format!("认证失败: {}", retry_stderr));
                     }
                 }
@@ -106,7 +120,8 @@ fn fetch_svn_files(
         return Err(format!("SVN 命令执行失败: {}", stderr));
     }
 
-    parse_svn_output(String::from_utf8_lossy(&output.stdout).to_string())
+    let stdout = decode_svn_text(&output.stdout);
+    parse_svn_output(stdout)
 }
 
 /// 解析 SVN 输出，转换为文件路径列表

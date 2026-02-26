@@ -2782,6 +2782,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "encoding_rs",
  "lazy_static",
  "rusqlite",
  "serde",
