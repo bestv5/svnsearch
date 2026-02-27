@@ -4,11 +4,20 @@ use tauri::{
     CustomMenuItem, Manager, Menu, MenuItem, Submenu,
 };
 
+mod database;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SvnResult {
     success: bool,
     files: Vec<String>,
     error: Option<String>,
+}
+
+/// 搜索返回的条目（url + path）
+#[derive(Debug, Serialize, Deserialize)]
+pub struct IndexEntry {
+    pub url: String,
+    pub path: String,
 }
 
 /// 检测系统是否安装了 SVN 命令
@@ -144,6 +153,35 @@ fn parse_svn_output(output: String) -> Result<Vec<String>, String> {
     Ok(files)
 }
 
+/// 将索引保存到数据库（按仓库 URL）
+#[tauri::command]
+fn save_index(url: String, files: Vec<String>) -> Result<(), String> {
+    database::save_index(&url, &files)
+}
+
+/// 从数据库加载某仓库的索引
+#[tauri::command]
+fn load_index(url: String) -> Result<Vec<String>, String> {
+    database::load_index(&url)
+}
+
+/// 清空某仓库的索引
+#[tauri::command]
+fn clear_index(url: String) -> Result<(), String> {
+    database::clear_index(&url)
+}
+
+/// 模糊搜索所有仓库的索引（path 包含关键词即命中）
+#[tauri::command]
+fn search_index(query: String, limit: Option<u32>) -> Result<Vec<IndexEntry>, String> {
+    let limit = limit.unwrap_or(200);
+    let pairs = database::search_index(&query, limit)?;
+    Ok(pairs
+        .into_iter()
+        .map(|(url, path)| IndexEntry { url, path })
+        .collect())
+}
+
 /// 自动检测 SVN 命令路径
 #[tauri::command]
 fn detect_svn_path() -> Option<String> {
@@ -262,8 +300,12 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             check_svn,
             fetch_svn_files,
-             detect_svn_path,
-            copy_to_clipboard
+            detect_svn_path,
+            copy_to_clipboard,
+            save_index,
+            load_index,
+            clear_index,
+            search_index,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

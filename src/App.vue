@@ -8,10 +8,11 @@
           v-model="searchQuery" 
           type="text" 
           class="search-input"
-          :placeholder="fileCount > 0 ? '输入文件名搜索...' : '请先在“设置”中索引仓库，然后在这里搜索文件（Ctrl+Space）'"
-          :disabled="fileCount === 0 || isLoading"
+          :placeholder="profiles.length > 0 ? '输入文件名或路径片段搜索（跨仓库）...' : '请先在“设置”中添加仓库并建立索引，然后回来搜索'"
+          :disabled="isLoading || isSearching"
           @input="handleSearch"
         />
+        <button class="btn-settings" type="button" title="设置" @click="goToSettings">⚙️</button>
       </div>
       
       <!-- 结果列表 -->
@@ -22,14 +23,15 @@
         
         <div 
           v-for="(file, index) in filteredFiles" 
-          :key="index"
+          :key="file.url + '/' + file.path"
           class="result-item"
           @click="copyPath(file)"
         >
           <div class="file-icon">📄</div>
           <div class="file-info">
-            <div class="file-name">{{ getFileName(file) }}</div>
-            <div class="file-path">{{ file }}</div>
+            <div class="file-name">{{ getFileName(file.path) }}</div>
+            <div class="file-path">{{ file.path }}</div>
+            <div class="file-repo">仓库：{{ file.title }}</div>
           </div>
         </div>
       </div>
@@ -37,12 +39,13 @@
       <!-- 状态栏 -->
       <div class="status-bar">
         <span v-if="errorMessage" class="error">{{ errorMessage }}</span>
-        <span v-else-if="isLoading">正在获取文件列表...（约 {{ progress }}% ）</span>
+        <span v-else-if="isLoading">正在更新索引...（约 {{ progress }}% ）</span>
         <div v-if="isLoading" class="progress-bar">
           <div class="progress-inner" :style="{ width: progress + '%' }"></div>
         </div>
+        <span v-else-if="isSearching">正在搜索...</span>
         <span v-else-if="searchQuery">找到 {{ filteredFiles.length }} 个结果</span>
-        <span v-else-if="fileCount > 0">就绪</span>
+        <span v-else>就绪</span>
       </div>
     </div>
 
@@ -72,6 +75,16 @@
       <div class="config-panel">
         <div class="config-main">
           <div class="config-form">
+            <div class="form-group">
+              <label>仓库标题（可选）</label>
+              <input
+                v-model="repoTitle"
+                type="text"
+                placeholder="例如：研发主干 / 组件库"
+                :disabled="isLoading"
+              />
+            </div>
+
             <div class="form-group">
               <label>SVN 仓库地址</label>
               <input 
@@ -188,6 +201,7 @@ const svnUrl = ref('')
 const username = ref('')
 const password = ref('')
 const isLoading = ref(false)
+const isSearching = ref(false)
 const errorMessage = ref('')
 const fileCount = ref(0)
 const searchQuery = ref('')
@@ -197,7 +211,6 @@ const progress = ref(0)
 const currentView = ref('search')
 
 // 文件列表
-const allFiles = ref([])
 const filteredFiles = ref([])
 
 // 配置管理
@@ -211,6 +224,12 @@ let progressTimer = null
 // SVN 路径配置
 const svnPath = ref('')
 const svnPathAutoDetected = ref('')
+
+// 仓库标题（保存在 profile 中）
+const repoTitle = ref('')
+
+let searchDebounceTimer = null
+let latestSearchToken = 0
 
 function loadProfiles() {
   try {
@@ -268,6 +287,14 @@ function persistSvnPath() {
 onMounted(() => {
   loadProfiles()
   loadSvnPath()
+  // 回显选中配置到表单
+  if (profiles.value.length > 0) {
+    const selected =
+      profiles.value.find((p) => p.id === selectedProfileId.value) || profiles.value[0]
+    if (selected) {
+      useProfile(selected)
+    }
+  }
 
   // 自动检测 SVN 路径，用于默认回显
   invoke('detect_svn_path')
@@ -316,6 +343,7 @@ watch(svnPath, () => {
 
 function useProfile(profile) {
   selectedProfileId.value = profile.id
+  repoTitle.value = profile.title || ''
   svnUrl.value = profile.url || ''
   username.value = profile.username || ''
   password.value = profile.password || ''
@@ -343,6 +371,7 @@ function saveCurrentAsProfile() {
   const profileData = {
     id: existingIndex >= 0 ? profiles.value[existingIndex].id : Date.now().toString(),
     name: autoName,
+    title: repoTitle.value || '',
     url: svnUrl.value,
     username: username.value,
     password: password.value
@@ -375,14 +404,33 @@ function goBackToSearch() {
   currentView.value = 'search'
 }
 
+function goToSettings() {
+  currentView.value = 'settings'
+}
+
 // 清空索引结果
-function clearIndex() {
-  allFiles.value = []
-  filteredFiles.value = []
-  fileCount.value = 0
-  searchQuery.value = ''
-  errorMessage.value = ''
+async function clearIndex() {
+  if (!svnUrl.value) return
+
+  isLoading.value = true
   progress.value = 0
+  errorMessage.value = ''
+
+  try {
+    await invoke('clear_index', { url: svnUrl.value })
+    fileCount.value = 0
+    // 清完当前仓库索引后，若正在搜索则刷新一次结果（跨仓库）
+    if (searchQuery.value.trim()) {
+      await performSearch()
+    } else {
+      filteredFiles.value = []
+    }
+  } catch (error) {
+    errorMessage.value = error.toString()
+  } finally {
+    isLoading.value = false
+    progress.value = 100
+  }
 }
 
 // 索引仓库
@@ -392,10 +440,8 @@ async function indexRepository() {
   isLoading.value = true
   progress.value = 0
   errorMessage.value = ''
-  allFiles.value = []
   filteredFiles.value = []
   fileCount.value = 0
-  searchQuery.value = ''
 
   if (progressTimer) {
     clearInterval(progressTimer)
@@ -422,9 +468,12 @@ async function indexRepository() {
       svnPath: svnPath.value || null
     })
     
-    allFiles.value = files
+    await invoke('save_index', { url: svnUrl.value, files })
     fileCount.value = files.length
-    filteredFiles.value = files.slice(0, 100) // 初始显示前100个
+    // 更新索引后，如果用户当前有关键词，则立刻刷新搜索结果
+    if (searchQuery.value.trim()) {
+      await performSearch()
+    }
   } catch (error) {
     errorMessage.value = error.toString()
   } finally {
@@ -439,17 +488,47 @@ async function indexRepository() {
 
 // 搜索处理
 function handleSearch() {
-  const query = searchQuery.value.toLowerCase().trim()
-  
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+    searchDebounceTimer = null
+  }
+  searchDebounceTimer = setTimeout(() => {
+    performSearch()
+  }, 200)
+}
+
+async function performSearch() {
+  const query = searchQuery.value.trim()
   if (!query) {
-    filteredFiles.value = allFiles.value.slice(0, 100)
+    filteredFiles.value = []
+    errorMessage.value = ''
+    isSearching.value = false
     return
   }
-  
-  // 不区分大小写的子字符串匹配
-  filteredFiles.value = allFiles.value
-    .filter(file => file.toLowerCase().includes(query))
-    .slice(0, 200) // 限制显示数量
+
+  const token = ++latestSearchToken
+  isSearching.value = true
+  errorMessage.value = ''
+
+  try {
+    const entries = await invoke('search_index', { query, limit: 200 })
+    if (token !== latestSearchToken) return
+
+    const urlToProfile = new Map((profiles.value || []).map((p) => [p.url, p]))
+    filteredFiles.value = (entries || []).map((e) => {
+      const p = urlToProfile.get(e.url)
+      const title = p?.title || p?.name || e.url
+      return { url: e.url, path: e.path, title }
+    })
+  } catch (error) {
+    if (token !== latestSearchToken) return
+    errorMessage.value = error.toString()
+    filteredFiles.value = []
+  } finally {
+    if (token === latestSearchToken) {
+      isSearching.value = false
+    }
+  }
 }
 
 // 获取文件名
@@ -458,13 +537,21 @@ function getFileName(filePath) {
   return parts[parts.length - 1] || filePath
 }
 
+function getFullSvnUrl(entry) {
+  const base = (entry.url || '').replace(/\/+$/, '')
+  const path = (entry.path || '').replace(/^\/+/, '')
+  if (!base) return path
+  if (!path) return base
+  return `${base}/${path}`
+}
+
 // 复制路径
-async function copyPath(file) {
+async function copyPath(entry) {
   try {
-    await invoke('copy_to_clipboard', { text: file })
+    await invoke('copy_to_clipboard', { text: getFullSvnUrl(entry) })
   } catch (error) {
     // 回退到原生方法
-    navigator.clipboard.writeText(file)
+    navigator.clipboard.writeText(getFullSvnUrl(entry))
   }
 }
 </script>
@@ -717,11 +804,14 @@ body {
 /* 搜索区域 */
 .search-panel {
   margin-bottom: 15px;
+  position: relative;
+  display: flex;
+  align-items: center;
 }
 
 .search-input {
   width: 100%;
-  padding: 14px 18px;
+  padding: 14px 60px 14px 18px;
   font-size: 15px;
   border: 2px solid #333;
   border-radius: 10px;
@@ -733,6 +823,31 @@ body {
 
 .search-input:focus {
   border-color: #667eea;
+}
+
+/* 设置按钮 */
+.btn-settings {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  background: #1f2937;
+  color: #9ca3af;
+  font-size: 18px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-settings:hover {
+  background: #374151;
+  color: #eee;
 }
 
 /* 结果列表 */
@@ -786,6 +901,15 @@ body {
 .file-path {
   font-size: 12px;
   color: #888;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-repo {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #9ca3af;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
