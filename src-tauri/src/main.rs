@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 use tauri::{
@@ -272,10 +274,7 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
 fn main() {
     let settings_item = CustomMenuItem::new("open-settings".to_string(), "设置");
     let app_menu = Menu::new()
-        .add_submenu(Submenu::new(
-            "SVN 文件搜索",
-            Menu::new().add_item(settings_item),
-        ))
+        .add_item(settings_item)
         .add_native_item(MenuItem::Quit);
 
     tauri::Builder::default()
