@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 use tauri::{
-    CustomMenuItem, Manager, Menu, MenuItem, Submenu,
+    CustomMenuItem, Manager, Menu, MenuItem,
 };
 
 mod database;
