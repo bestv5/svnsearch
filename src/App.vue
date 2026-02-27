@@ -43,7 +43,7 @@
           :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }"
         >
           <div class="context-menu-item" @click="handleCopyFromMenu">
-            复制完整 SVN 地址
+            复制完整路径和文件名
           </div>
         </div>
       </div>
@@ -572,11 +572,15 @@ function getFullSvnUrl(entry) {
 
 // 复制路径
 async function copyPath(entry) {
+  const text = getFullSvnUrl(entry)
   try {
-    await invoke('copy_to_clipboard', { text: getFullSvnUrl(entry) })
+    await navigator.clipboard.writeText(text)
   } catch (error) {
-    // 回退到原生方法
-    navigator.clipboard.writeText(getFullSvnUrl(entry))
+    try {
+      await invoke('copy_to_clipboard', { text })
+    } catch (_) {
+      // ignore
+    }
   }
 }
 
