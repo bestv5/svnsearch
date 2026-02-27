@@ -45,8 +45,7 @@
       "windows": {
         "certificateThumbprint": null,
         "digestAlgorithm": "sha256",
-        "timestampUrl": "",
-        "iconPath": "icons/icon.ico"
+        "timestampUrl": ""
       }
     },
 

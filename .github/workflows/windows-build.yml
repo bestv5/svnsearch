@@ -109,17 +109,37 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $releaseDir = "src-tauri/target/release"
-          if (-not (Test-Path $releaseDir)) {
-            Write-Error "Release directory not found: $releaseDir"
+          # 优先从 bundle/windows 取便携文件夹（包含 exe + 依赖），图标与运行更稳定
+          $productName = "SVNSearch"
+          $bundleWindowsDir = "src-tauri/target/release/bundle/windows"
+          $portableRoot = $null
+
+          if (Test-Path $bundleWindowsDir) {
+            $exe = Get-ChildItem $bundleWindowsDir -Recurse -Filter "$productName.exe" | Select-Object -First 1
+            if ($exe) {
+              $portableRoot = $exe.Directory.FullName
+              Write-Host "Found bundled portable app dir: $portableRoot"
+            } else {
+              Write-Host "No $productName.exe found under $bundleWindowsDir, fallback to release exe."
+            }
+          } else {
+            Write-Host "Bundle windows directory not found: $bundleWindowsDir, fallback to release exe."
           }
 
-          $exe = Get-ChildItem $releaseDir -Filter "*.exe" | Select-Object -First 1
-          if (-not $exe) {
-            Write-Error "No Windows executable (*.exe) found in $releaseDir"
-          }
+          if (-not $portableRoot) {
+            $releaseDir = "src-tauri/target/release"
+            if (-not (Test-Path $releaseDir)) {
+              Write-Error "Release directory not found: $releaseDir"
+            }
 
-          Write-Host "Found executable: $($exe.FullName)"
+            $exe = Get-ChildItem $releaseDir -Filter "*.exe" | Select-Object -First 1
+            if (-not $exe) {
+              Write-Error "No Windows executable (*.exe) found in $releaseDir"
+            }
+
+            $portableRoot = $exe.Directory.FullName
+            Write-Host "Found release executable: $($exe.FullName)"
+          }
 
           $outDir = "dist"
           New-Item -ItemType Directory -Force -Path $outDir | Out-Null
@@ -129,7 +149,7 @@ jobs:
             Remove-Item $zipPath -Force
           }
 
-          Compress-Archive -Path $exe.FullName -DestinationPath $zipPath -Force
+          Compress-Archive -Path (Join-Path $portableRoot "*") -DestinationPath $zipPath -Force
           Write-Host "Created portable archive at $zipPath"
         shell: pwsh
 
