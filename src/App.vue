@@ -26,12 +26,24 @@
           :key="file.url + '/' + file.path"
           class="result-item"
           @click="copyPath(file)"
+          @contextmenu.prevent="openContextMenu($event, file)"
         >
           <div class="file-icon">📄</div>
           <div class="file-info">
             <div class="file-name">{{ getFileName(file.path) }}</div>
             <div class="file-path">{{ file.path }}</div>
             <div class="file-repo">仓库：{{ file.title }}</div>
+          </div>
+        </div>
+
+        <!-- 右键菜单 -->
+        <div
+          v-if="contextMenu.visible"
+          class="context-menu"
+          :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }"
+        >
+          <div class="context-menu-item" @click="handleCopyFromMenu">
+            复制完整 SVN 地址
           </div>
         </div>
       </div>
@@ -231,6 +243,13 @@ const repoTitle = ref('')
 let searchDebounceTimer = null
 let latestSearchToken = 0
 
+const contextMenu = ref({
+  visible: false,
+  x: 0,
+  y: 0,
+  file: null
+})
+
 function loadProfiles() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -317,6 +336,9 @@ onMounted(() => {
   }).catch(() => {
     // ignore
   })
+
+  window.addEventListener('click', handleGlobalClick)
+  window.addEventListener('contextmenu', handleGlobalContextMenu)
 })
 
 onUnmounted(() => {
@@ -327,6 +349,9 @@ onUnmounted(() => {
     clearInterval(progressTimer)
     progressTimer = null
   }
+
+  window.removeEventListener('click', handleGlobalClick)
+  window.removeEventListener('contextmenu', handleGlobalContextMenu)
 })
 
 watch(
@@ -554,6 +579,34 @@ async function copyPath(entry) {
     navigator.clipboard.writeText(getFullSvnUrl(entry))
   }
 }
+
+function openContextMenu(event, file) {
+  contextMenu.value.visible = true
+  contextMenu.value.x = event.clientX
+  contextMenu.value.y = event.clientY
+  contextMenu.value.file = file
+}
+
+function handleCopyFromMenu() {
+  if (contextMenu.value.file) {
+    copyPath(contextMenu.value.file)
+  }
+  contextMenu.value.visible = false
+}
+
+function handleGlobalClick() {
+  if (contextMenu.value.visible) {
+    contextMenu.value.visible = false
+  }
+}
+
+function handleGlobalContextMenu(e) {
+  // 如果右键发生在菜单外，则关闭现有菜单，保留浏览器/系统默认菜单
+  if (!(e.target instanceof HTMLElement)) return
+  if (!e.target.closest('.result-item') && !e.target.closest('.context-menu')) {
+    contextMenu.value.visible = false
+  }
+}
 </script>
 
 <style>
@@ -577,6 +630,14 @@ body {
   max-width: 900px;
   margin: 0 auto;
   padding: 20px;
+}
+
+.view-search,
+.view-settings {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 /* SVN 路径区域 */
@@ -913,6 +974,28 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 180px;
+  background: #111827;
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+  padding: 4px 0;
+  border: 1px solid #374151;
+}
+
+.context-menu-item {
+  padding: 8px 14px;
+  font-size: 13px;
+  color: #e5e7eb;
+  cursor: pointer;
+}
+
+.context-menu-item:hover {
+  background: #1f2937;
 }
 
 .empty-state {
