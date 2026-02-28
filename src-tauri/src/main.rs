@@ -7,6 +7,22 @@ use tauri::{Emitter, Manager};
 
 mod database;
 
+/// 创建一个在 Windows 下不弹出黑框的命令执行器。
+///
+/// 说明：本应用在 Windows 上是 GUI 子系统（`windows_subsystem="windows"`），
+/// 当它启动 `svn.exe` 这类控制台程序时，系统会默认弹出一个控制台窗口。
+/// 通过设置 `CREATE_NO_WINDOW` 可以避免该黑框闪现。
+fn command_no_window<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SvnResult {
     success: bool,
@@ -28,7 +44,10 @@ fn check_svn(svn_path: Option<String>) -> Result<bool, String> {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "svn".to_string());
 
-    let output = Command::new(cmd).arg("--version").arg("--quiet").output();
+    let output = command_no_window(&cmd)
+        .arg("--version")
+        .arg("--quiet")
+        .output();
 
     match output {
         Ok(o) => Ok(o.status.success()),
@@ -87,7 +106,7 @@ fn fetch_svn_files(
     }
 
     // 执行命令
-    let output = Command::new(&cmd)
+    let output = command_no_window(&cmd)
         .args(&args)
         .output()
         .map_err(|e| format!("执行 SVN 命令失败: {}", e))?;
@@ -110,7 +129,7 @@ fn fetch_svn_files(
                         url.clone(),
                     ];
 
-                    let retry_output = Command::new(&cmd)
+                    let retry_output = command_no_window(&cmd)
                         .args(&retry_args)
                         .output()
                         .map_err(|e| format!("重试 SVN 命令失败: {}", e))?;
@@ -188,7 +207,7 @@ fn search_index(query: String, limit: Option<u32>) -> Result<Vec<IndexEntry>, St
 fn detect_svn_path() -> Option<String> {
     #[cfg(target_os = "windows")]
     {
-        let output = Command::new("where").arg("svn").output().ok()?;
+        let output = command_no_window("where").arg("svn").output().ok()?;
         if !output.status.success() {
             return None;
         }
@@ -203,7 +222,7 @@ fn detect_svn_path() -> Option<String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let output = Command::new("which").arg("svn").output().ok()?;
+        let output = command_no_window("which").arg("svn").output().ok()?;
         if !output.status.success() {
             return None;
         }
@@ -223,7 +242,7 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         use std::io::Write;
-        let mut child = Command::new("pbcopy")
+        let mut child = command_no_window("pbcopy")
             .stdin(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| format!("复制到剪贴板失败: {}", e))?;
@@ -238,7 +257,7 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::io::Write;
-        let mut child = Command::new("cmd")
+        let mut child = command_no_window("cmd")
             .args(["/C", "clip"])
             .stdin(std::process::Stdio::piped())
             .spawn()
@@ -254,7 +273,7 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         use std::io::Write;
-        let mut child = Command::new("xclip")
+        let mut child = command_no_window("xclip")
             .args(["-selection", "clipboard"])
             .stdin(std::process::Stdio::piped())
             .spawn()

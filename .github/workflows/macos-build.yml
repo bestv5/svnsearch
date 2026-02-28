@@ -35,7 +35,12 @@ jobs:
       - name: Cache Cargo target
         uses: actions/cache@v4
         with:
-          path: target
+          # 只缓存编译中间产物，避免缓存 release bundle 等最终产物
+          path: |
+            src-tauri/target/release/deps
+            src-tauri/target/release/build
+            src-tauri/target/release/.fingerprint
+            src-tauri/target/release/incremental
           key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-target-

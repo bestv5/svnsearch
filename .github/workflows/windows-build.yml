@@ -60,7 +60,11 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            src-tauri/target
+            # 只缓存编译中间产物，避免把 target/release 下的可执行文件/打包残留一起缓存
+            src-tauri/target/release/deps
+            src-tauri/target/release/build
+            src-tauri/target/release/.fingerprint
+            src-tauri/target/release/incremental
           key: ${{ runner.os }}-cargo-${{ steps.rust-version.outputs.toolchain }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-${{ steps.rust-version.outputs.toolchain }}-
