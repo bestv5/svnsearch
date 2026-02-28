@@ -1,7 +1,7 @@
 {
   "productName": "SVNSearch",
   "version": "1.0.0",
-  "identifier": "SVNSearch",
+  "identifier": "SvnSearch",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
