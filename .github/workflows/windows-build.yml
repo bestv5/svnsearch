@@ -83,31 +83,27 @@ jobs:
           }
         shell: pwsh
 
-      - name: Create portable zip
+      - name: Create portable bundle (no inner zip)
         run: |
           $ErrorActionPreference = "Stop"
 
           $productName = "SVNSearch"
           $releaseDir = "src-tauri/target/release"
-          $outDir = "dist"
-          $zipPath = Join-Path $outDir "svnsearch-windows-portable.zip"
-
-          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+          $portableDir = "dist/svnsearch-windows-portable"
 
           # 只允许便携包：从 release 目录取主程序 exe + dll（严禁从 bundle 目录取文件）
           if (-not (Test-Path $releaseDir)) { Write-Error "Release directory not found: $releaseDir" }
           $mainExe = Get-ChildItem $releaseDir -Filter "$productName.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $mainExe) { Write-Error "Main exe not found: $releaseDir\\$productName.exe" }
-          Write-Host "Packaging portable zip: $($mainExe.Name) + dll from release"
-          $dllFiles = @(Get-ChildItem $releaseDir -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
-          $filesToZip = @($mainExe.FullName) + $dllFiles
-          $filesToZip = @($filesToZip | Where-Object { $_ -and $_.Trim().Length -gt 0 })
 
-          if (-not $filesToZip -or $filesToZip.Count -eq 0) { Write-Error "No files to include in portable zip" }
+          Remove-Item -Path $portableDir -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
 
-          Compress-Archive -Path $filesToZip -DestinationPath $zipPath -Force
-          Write-Host "Created portable archive at $zipPath ($(($filesToZip | Measure-Object).Count) files)"
+          Write-Host "Copying portable files: $($mainExe.Name) + dll from release"
+          Copy-Item -Path $mainExe.FullName -Destination $portableDir -Force
+          Get-ChildItem $releaseDir -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName -Destination $portableDir -Force }
+          $fileCount = (Get-ChildItem $portableDir -File).Count
+          Write-Host "Created portable folder at $portableDir ($fileCount files). Artifact zip will contain exe+dll directly (one unzip)."
         shell: pwsh
 
       - name: Upload Windows portable bundle
@@ -115,6 +111,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-portable
-          path: |
-            dist/svnsearch-windows-portable.zip
+          path: dist/svnsearch-windows-portable
           if-no-files-found: ignore
