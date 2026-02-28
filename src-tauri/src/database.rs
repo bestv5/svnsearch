@@ -4,6 +4,8 @@
 
 use rusqlite::types::Value;
 use rusqlite::Connection;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
 
 /// 从 path 计算名称与是否目录：目录以 / 结尾，name 为末段（去掉尾随 / 后取最后一段）
@@ -38,6 +40,18 @@ fn get_db_path() -> Result<PathBuf, String> {
     let dir = base.join("svnsearch");
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建数据目录失败: {}", e))?;
     Ok(dir.join("index.db"))
+}
+
+/// 追加调试日志到本地文件（最佳努力，失败时静默忽略）
+fn append_debug_log(line: &str) {
+    if let Some(mut dir) = dirs::data_local_dir() {
+        dir.push("svnsearch");
+        let _ = std::fs::create_dir_all(&dir);
+        let log_path = dir.join("svnsearch-debug.log");
+        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(log_path) {
+            let _ = writeln!(f, "{}", line);
+        }
+    }
 }
 
 /// 打开数据库连接
@@ -337,7 +351,15 @@ pub fn search_index(
     let mut candidates: Vec<(String, String, String, i32)> = Vec::new();
 
     if use_fts {
+        append_debug_log(&format!(
+            "[svnsearch][fts] 即将走 FTS 搜索，原始 query=\"{}\", config={:?}",
+            query, parsed.config
+        ));
         let fts_expr = build_fts_match_from_expr(expr);
+        append_debug_log(&format!(
+            "[svnsearch][fts] 构造出的 FTS match 表达式: {}",
+            fts_expr
+        ));
         // 使用显式编号的占位符，避免参数个数与占位符个数不一致
         let mut sql = String::from(
             "SELECT url, path, name, is_dir FROM file_index_fts WHERE file_index_fts MATCH ?1 ",
@@ -350,6 +372,10 @@ pub fn search_index(
         }
         // 取一个略大于前端 limit 的上限，避免高亮兜底后不足
         let db_limit: i64 = ((limit as i64) * 5).clamp(limit as i64, 10_000);
+        append_debug_log(&format!(
+            "[svnsearch][fts] FTS SQL: {} | limit={} (db_limit={})",
+            sql, limit, db_limit
+        ));
         // 按排序键决定 ORDER BY
         match sort_key {
             "name" => sql.push_str("ORDER BY name COLLATE NOCASE, url, path "),
@@ -361,7 +387,13 @@ pub fn search_index(
 
         let mut stmt = conn
             .prepare(&sql)
-            .map_err(|e| format!("准备 FTS 搜索语句失败: {}", e))?;
+            .map_err(|e| {
+                append_debug_log(&format!(
+                    "[svnsearch][fts] 准备 FTS 搜索语句失败: {} | sql={}",
+                    e, sql
+                ));
+                format!("准备 FTS 搜索语句失败: {}", e)
+            })?;
         let rows = stmt
             .query_map(rusqlite::params![fts_expr, db_limit], |row| {
                 Ok((
@@ -371,9 +403,18 @@ pub fn search_index(
                     row.get::<_, i32>(3)?,
                 ))
             })
-            .map_err(|e| format!("FTS 搜索失败: {}", e))?;
+            .map_err(|e| {
+                append_debug_log(&format!(
+                    "[svnsearch][fts] FTS 搜索失败: {} | sql={} | match_expr={} | limit={}",
+                    e, sql, fts_expr, db_limit
+                ));
+                format!("FTS 搜索失败: {}", e)
+            })?;
         for row in rows {
-            candidates.push(row.map_err(|e| format!("读取行失败: {}", e))?);
+            candidates.push(row.map_err(|e| {
+                append_debug_log(&format!("[svnsearch][fts] 读取行失败: {}", e));
+                format!("读取行失败: {}", e)
+            })?);
         }
     } else {
         // 回退到原有 LIKE + 折叠列逻辑
