@@ -2,11 +2,9 @@
 //! 按仓库 URL 分别存储，支持多配置的索引加载与清空。
 //! 表结构 v1：url, path, name（文件名或目录名）, is_dir（0=文件 1=目录）。
 
-use rusqlite::Connection;
 use rusqlite::types::Value;
+use rusqlite::Connection;
 use std::path::PathBuf;
-
-const SCHEMA_VERSION: i32 = 2;
 
 /// 从 path 计算名称与是否目录：目录以 / 结尾，name 为末段（去掉尾随 / 后取最后一段）
 fn path_to_name_and_is_dir(path: &str) -> (String, bool) {
@@ -48,47 +46,11 @@ fn open_db() -> Result<Connection, String> {
     Connection::open(&path).map_err(|e| format!("打开数据库失败: {}", e))
 }
 
-fn table_has_column(conn: &Connection, table: &str, col: &str) -> Result<bool, String> {
-    let mut stmt = conn
-        .prepare(&format!("PRAGMA table_info({})", table))
-        .map_err(|e| format!("读取表结构失败: {}", e))?;
-    let rows = stmt
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|e| format!("读取表结构失败: {}", e))?;
-    for r in rows {
-        let name = r.map_err(|e| format!("读取表结构失败: {}", e))?;
-        if name == col {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-/// 初始化表结构并执行迁移（user_version 0 → 1：增加 name, is_dir；v2 增加折叠列）
+/// 初始化表结构（不做历史迁移，假定用户可删除数据库重建索引）
 fn init_schema(conn: &Connection) -> Result<(), String> {
-    let version: i32 = conn
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .map_err(|e| format!("读取 user_version 失败: {}", e))?;
-
-    // 表结构迁移：仅在版本落后时执行
-    if version < SCHEMA_VERSION {
-        // 检查是否存在旧表
-        let table_exists: bool = conn
-            .query_row(
-                "SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name='file_index'",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| format!("检查表失败: {}", e))?;
-
-        if table_exists {
-            // 迁移：旧表重命名 → 建新表 → 拷贝并补齐派生字段 → 删旧表
-            conn.execute("ALTER TABLE file_index RENAME TO file_index_old", [])
-                .map_err(|e| format!("重命名旧表失败: {}", e))?;
-        }
-
-        conn.execute_batch(
-            r#"
+    // 主表：file_index
+    conn.execute_batch(
+        r#"
         CREATE TABLE IF NOT EXISTS file_index (
             url TEXT NOT NULL,
             path TEXT NOT NULL,
@@ -102,72 +64,10 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_file_index_is_dir_name_fold ON file_index(is_dir, name_fold);
         CREATE INDEX IF NOT EXISTS idx_file_index_name_fold ON file_index(name_fold);
         "#,
-        )
-        .map_err(|e| format!("创建表失败: {}", e))?;
+    )
+    .map_err(|e| format!("创建表失败: {}", e))?;
 
-        if table_exists {
-            let old_has_name = table_has_column(conn, "file_index_old", "name")?;
-            let old_has_is_dir = table_has_column(conn, "file_index_old", "is_dir")?;
-
-            let select_sql = if old_has_name && old_has_is_dir {
-                "SELECT url, path, name, is_dir FROM file_index_old"
-            } else {
-                "SELECT url, path FROM file_index_old"
-            };
-
-            let mut stmt = conn
-                .prepare(select_sql)
-                .map_err(|e| format!("准备查询旧表失败: {}", e))?;
-            let rows = stmt
-                .query_map([], |row| {
-                    if old_has_name && old_has_is_dir {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, i32>(3)?,
-                        ))
-                    } else {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            String::new(),
-                            0i32,
-                        ))
-                    }
-                })
-                .map_err(|e| format!("查询旧表失败: {}", e))?;
-
-            let mut insert_stmt = conn
-                .prepare(
-                    "INSERT INTO file_index (url, path, name, is_dir, name_fold, name_ascii_fold) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                )
-                .map_err(|e| format!("准备插入失败: {}", e))?;
-
-            for row in rows {
-                let (url, path, mut name, mut is_dir_int): (String, String, String, i32) =
-                    row.map_err(|e| format!("读取行失败: {}", e))?;
-                if !(old_has_name && old_has_is_dir) {
-                    let (n, is_dir) = path_to_name_and_is_dir(&path);
-                    name = n;
-                    is_dir_int = if is_dir { 1i32 } else { 0i32 };
-                }
-                let name_fold = fold_name_for_db(&name);
-                let name_ascii_fold = fold_name_ascii_for_db(&name);
-                insert_stmt
-                    .execute(rusqlite::params![&url, &path, &name, is_dir_int, &name_fold, &name_ascii_fold])
-                    .map_err(|e| format!("迁移插入失败: {}", e))?;
-            }
-
-            conn.execute("DROP TABLE file_index_old", [])
-                .map_err(|e| format!("删除旧表失败: {}", e))?;
-        }
-
-        conn.execute(&format!("PRAGMA user_version = {}", SCHEMA_VERSION), [])
-            .map_err(|e| format!("设置 user_version 失败: {}", e))?;
-    }
-
-    // FTS5 虚表：file_index_fts，用于全文搜索与排序
+    // FTS5 虚表：file_index_fts
     let fts_exists: bool = conn
         .query_row(
             "SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name='file_index_fts'",
@@ -182,33 +82,6 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             [],
         )
         .map_err(|e| format!("创建 FTS5 表失败: {}", e))?;
-
-        // 初次创建时，从已有主表全量填充一遍，避免必须重建索引
-        let mut stmt = conn
-            .prepare("SELECT url, path, name, is_dir FROM file_index")
-            .map_err(|e| format!("准备填充 FTS5 查询失败: {}", e))?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i32>(3)?,
-                ))
-            })
-            .map_err(|e| format!("查询主表失败: {}", e))?;
-
-        let mut insert_stmt = conn
-            .prepare("INSERT INTO file_index_fts (url, path, name, is_dir) VALUES (?1, ?2, ?3, ?4)")
-            .map_err(|e| format!("准备填充 FTS5 插入失败: {}", e))?;
-
-        for row in rows {
-            let (url, path, name, is_dir_int): (String, String, String, i32) =
-                row.map_err(|e| format!("读取行失败: {}", e))?;
-            insert_stmt
-                .execute(rusqlite::params![&url, &path, &name, is_dir_int])
-                .map_err(|e| format!("填充 FTS5 失败: {}", e))?;
-        }
     }
 
     Ok(())
@@ -334,7 +207,7 @@ fn build_fts_match_from_expr(expr: &crate::search_query::Expr) -> String {
             if parts.len() == 1 {
                 parts[0].clone()
             } else {
-                format!(\"({})\", parts.join(\" OR \"))
+                format!("({})", parts.join(" OR "))
             }
         }
         Expr::And(children) => {
@@ -342,10 +215,10 @@ fn build_fts_match_from_expr(expr: &crate::search_query::Expr) -> String {
             if parts.len() == 1 {
                 parts[0].clone()
             } else {
-                format!(\"({})\", parts.join(\" AND \"))
+                format!("({})", parts.join(" AND "))
             }
         }
-        Expr::Not(inner) => format!(\"NOT ({})\", build_fts_match_from_expr(inner)),
+        Expr::Not(inner) => format!("NOT ({})", build_fts_match_from_expr(inner)),
         Expr::Term(t) => escape_fts_token(t),
         Expr::Phrase(p) => format!("\"{}\"", escape_fts_phrase(p)),
     }
