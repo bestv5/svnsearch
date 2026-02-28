@@ -338,8 +338,9 @@ pub fn search_index(
 
     if use_fts {
         let fts_expr = build_fts_match_from_expr(expr);
+        // 使用显式编号的占位符，避免参数个数与占位符个数不一致
         let mut sql = String::from(
-            "SELECT url, path, name, is_dir FROM file_index_fts WHERE file_index_fts MATCH ? ",
+            "SELECT url, path, name, is_dir FROM file_index_fts WHERE file_index_fts MATCH ?1 ",
         );
         // 类型过滤（file:/folder:）
         match parsed.config.type_filter {
@@ -356,7 +357,7 @@ pub fn search_index(
             "type" => sql.push_str("ORDER BY is_dir DESC, name COLLATE NOCASE, url, path "),
             _ => sql.push_str("ORDER BY bm25(file_index_fts), url, path "),
         }
-        sql.push_str("LIMIT ?1");
+        sql.push_str("LIMIT ?2");
 
         let mut stmt = conn
             .prepare(&sql)
