@@ -15,35 +15,27 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Cache Rust toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup
+          key: ${{ runner.os }}-rust-toolchain-stable
+          restore-keys: |
+            ${{ runner.os }}-rust-toolchain-
 
       - name: Setup Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          override: true
+          targets: x86_64-apple-darwin
 
-      - name: Cache Cargo registry + git
-        uses: actions/cache@v4
+      - name: Cache Rust (cargo + target)
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache Cargo target
-        uses: actions/cache@v4
-        with:
-          # 只缓存编译中间产物，避免缓存 release bundle 等最终产物
-          path: |
-            src-tauri/target/release/deps
-            src-tauri/target/release/build
-            src-tauri/target/release/.fingerprint
-            src-tauri/target/release/incremental
-          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-target-
+          workspaces: |
+            src-tauri -> target
 
       - name: Install npm dependencies
         run: npm ci
@@ -51,25 +43,11 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      - name: Install Tauri CLI
-        run: npm install -g @tauri-apps/cli
-
-      - name: Add x86_64 target (Intel mac)
-        env:
-          CARGO_HOME: ${{ runner.temp }}/cargo
-        run: |
-          set -e
-          source $HOME/.cargo/env || true
-          rustup target add x86_64-apple-darwin || true
-
       - name: Build macOS bundle (Intel x86_64)
-        env:
-          CARGO_HOME: ${{ runner.temp }}/cargo
         run: |
           set -e
-          source $HOME/.cargo/env || true
-          # Build Intel (x86_64) macOS bundle
-          npx --yes tauri build --target x86_64-apple-darwin
+          # 使用项目内依赖（npm ci 已安装 @tauri-apps/cli），避免 npx/全局安装带来的重复下载
+          npm run tauri:build -- --target x86_64-apple-darwin
 
       - name: Upload macOS bundles
         uses: actions/upload-artifact@v4

@@ -20,6 +20,7 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+          cache-dependency-path: package-lock.json
 
       - name: Cache Rust toolchain
         uses: actions/cache@v4
@@ -35,40 +36,17 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Get Rust toolchain version
-        id: rust-version
-        run: |
-          $raw = (& rustc --version 2>$null).Trim()
-          if ($raw -match 'rustc\s+(\d+\.\d+\.\d+)') {
-            $ver = $matches[1]
-          } else {
-            $ver = "stable-fallback"
-          }
-          Write-Host "Detected rust version: $ver"
-          "toolchain=$ver" | Out-File -Encoding utf8 -NoNewline $env:GITHUB_OUTPUT
-        shell: pwsh
+      - name: Cache Rust (cargo + target)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> target
 
       - name: Install npm dependencies
         run: npm ci
 
       - name: Build frontend
         run: npm run build
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            # 只缓存编译中间产物，避免把 target/release 下的可执行文件/打包残留一起缓存
-            src-tauri/target/release/deps
-            src-tauri/target/release/build
-            src-tauri/target/release/.fingerprint
-            src-tauri/target/release/incremental
-          key: ${{ runner.os }}-cargo-${{ steps.rust-version.outputs.toolchain }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-${{ steps.rust-version.outputs.toolchain }}-
-            ${{ runner.os }}-cargo-
 
       - name: Clean stale bundle artifacts
         run: |
@@ -81,7 +59,8 @@ jobs:
       - name: Build app with Tauri
         run: |
           # 只编译，严禁生成任何安装包/Bundle（nsis/msi 等）
-          npx @tauri-apps/cli build --verbose --no-bundle
+          # 使用项目内依赖（npm ci 已安装 @tauri-apps/cli），避免 npx 触发的重复下载
+          npm run tauri:build -- --verbose --no-bundle
         shell: pwsh
 
       - name: Verify build artifacts
