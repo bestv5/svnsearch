@@ -101,6 +101,7 @@ fn has_glob(s: &str) -> bool {
 }
 
 /// 在规范化后的文本中找 pattern（已规范化）的子串，返回原串中的字节区间
+/// 注意：find() 返回的是字节偏移，map 按字符索引，需用 byte_offset_to_char_index 转换
 fn find_substring_ranges(
     orig: &str,
     folded_orig: &str,
@@ -111,22 +112,24 @@ fn find_substring_ranges(
         return vec![];
     }
     let mut ranges = Vec::new();
-    let mut start = 0;
-    while let Some(i) = folded_orig[start..].find(folded_pattern) {
-        let abs_start = start + i;
-        let abs_end = abs_start + folded_pattern.chars().count();
-        let byte_start = if abs_start < map.len() {
-            map[abs_start].0
+    let mut start_byte = 0;
+    while let Some(rel_byte) = folded_orig[start_byte..].find(folded_pattern) {
+        let abs_start_byte = start_byte + rel_byte;
+        let abs_end_byte = abs_start_byte + folded_pattern.len();
+        let start_char = byte_offset_to_char_index(folded_orig, abs_start_byte);
+        let end_char = byte_offset_to_char_index(folded_orig, abs_end_byte);
+        let byte_start = if start_char < map.len() {
+            map[start_char].0
         } else {
             orig.len()
         };
-        let byte_end = if abs_end > 0 && abs_end <= map.len() {
-            map[abs_end - 1].1
+        let byte_end = if end_char > 0 && end_char <= map.len() {
+            map[end_char - 1].1
         } else {
             orig.len()
         };
         ranges.push(byte_start..byte_end);
-        start = abs_start + 1;
+        start_byte = abs_start_byte + 1;
     }
     ranges
 }
@@ -568,5 +571,14 @@ mod tests {
         assert_eq!(segs[0], ("hello".to_string(), true));
         assert_eq!(segs[1], (" ".to_string(), false));
         assert_eq!(segs[2], ("world".to_string(), true));
+    }
+
+    /// 中文等多字节 UTF-8：find() 返回字节偏移，需正确转为字符索引，避免越界 panic
+    #[test]
+    fn test_chinese_substring_match() {
+        assert!(match_name("数据", "数据门户.txt", false).unwrap());
+        assert!(match_name("数据门户", "数据门户.x", false).unwrap());
+        assert!(match_name("门户", "数据门户", false).unwrap());
+        assert!(!match_name("户数", "数据门户", false).unwrap());
     }
 }
