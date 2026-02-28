@@ -14,6 +14,35 @@
         />
         <button class="btn-settings" type="button" title="设置" @click="goToSettings">⚙️</button>
       </div>
+
+      <!-- 排序切换 -->
+      <div class="sort-bar">
+        <span class="sort-label">排序：</span>
+        <button
+          type="button"
+          class="sort-chip"
+          :class="{ active: sortBy === 'relevance' }"
+          @click="changeSort('relevance')"
+        >相关度</button>
+        <button
+          type="button"
+          class="sort-chip"
+          :class="{ active: sortBy === 'name' }"
+          @click="changeSort('name')"
+        >名称</button>
+        <button
+          type="button"
+          class="sort-chip"
+          :class="{ active: sortBy === 'path' }"
+          @click="changeSort('path')"
+        >路径</button>
+        <button
+          type="button"
+          class="sort-chip"
+          :class="{ active: sortBy === 'type' }"
+          @click="changeSort('type')"
+        >类型</button>
+      </div>
       
       <!-- 结果列表 -->
       <div class="results-container">
@@ -234,6 +263,9 @@ const currentView = ref('search')
 // 文件列表
 const filteredFiles = ref([])
 
+// 排序：relevance / name / path / type
+const sortBy = ref('relevance')
+
 // 配置管理
 const STORAGE_KEY = 'svnsearch_svn_profiles'
 const STORAGE_SVN_PATH_KEY = 'svnsearch_svn_path'
@@ -258,6 +290,15 @@ const contextMenu = ref({
   y: 0,
   file: null
 })
+
+function changeSort(next) {
+  if (sortBy.value === next) return
+  sortBy.value = next
+  // 切换排序后，如果当前有查询，立即重新搜索
+  if (searchQuery.value.trim()) {
+    performSearch()
+  }
+}
 
 function loadProfiles() {
   try {
@@ -545,7 +586,11 @@ async function performSearch() {
   errorMessage.value = ''
 
   try {
-    const entries = await invoke('search_index', { query, limit: 200 })
+    const entries = await invoke('search_index', {
+      query,
+      limit: 200,
+      sort_by: sortBy.value
+    })
     if (token !== latestSearchToken) return
 
     const urlToProfile = new Map((profiles.value || []).map((p) => [p.url, p]))
@@ -887,6 +932,39 @@ body {
   position: relative;
   display: flex;
   align-items: center;
+}
+
+.sort-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.sort-label {
+  flex-shrink: 0;
+}
+
+.sort-chip {
+  border: none;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  background: #111827;
+  color: #9ca3af;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+
+.sort-chip.active {
+  background: #4f46e5;
+  color: #e5e7eb;
+}
+
+.sort-chip:hover:not(.active) {
+  background: #1f2937;
 }
 
 .search-input {

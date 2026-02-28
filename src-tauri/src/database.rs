@@ -3,9 +3,10 @@
 //! 表结构 v1：url, path, name（文件名或目录名）, is_dir（0=文件 1=目录）。
 
 use rusqlite::Connection;
+use rusqlite::types::Value;
 use std::path::PathBuf;
 
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 /// 从 path 计算名称与是否目录：目录以 / 结尾，name 为末段（去掉尾随 / 后取最后一段）
 fn path_to_name_and_is_dir(path: &str) -> (String, bool) {
@@ -13,6 +14,24 @@ fn path_to_name_and_is_dir(path: &str) -> (String, bool) {
     let p = path.trim_end_matches('/');
     let name = p.rsplit('/').next().unwrap_or(p).to_string();
     (name, is_dir)
+}
+
+fn fold_name_for_db(name: &str) -> String {
+    // 与 search_query 默认行为保持一致：全 Unicode 小写折叠
+    name.to_lowercase()
+}
+
+fn fold_name_ascii_for_db(name: &str) -> String {
+    // 与 search_query 的 ascii: 修饰符保持一致：仅 ASCII 字母小写
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphabetic() {
+                c.to_ascii_lowercase()
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 /// 获取数据库文件路径（位于用户本地数据目录 / svnsearch / index.db）
@@ -29,71 +48,169 @@ fn open_db() -> Result<Connection, String> {
     Connection::open(&path).map_err(|e| format!("打开数据库失败: {}", e))
 }
 
-/// 初始化表结构并执行迁移（user_version 0 → 1：增加 name, is_dir）
+fn table_has_column(conn: &Connection, table: &str, col: &str) -> Result<bool, String> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({})", table))
+        .map_err(|e| format!("读取表结构失败: {}", e))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| format!("读取表结构失败: {}", e))?;
+    for r in rows {
+        let name = r.map_err(|e| format!("读取表结构失败: {}", e))?;
+        if name == col {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// 初始化表结构并执行迁移（user_version 0 → 1：增加 name, is_dir；v2 增加折叠列）
 fn init_schema(conn: &Connection) -> Result<(), String> {
     let version: i32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|e| format!("读取 user_version 失败: {}", e))?;
 
-    if version >= SCHEMA_VERSION {
-        return Ok(());
-    }
+    // 表结构迁移：仅在版本落后时执行
+    if version < SCHEMA_VERSION {
+        // 检查是否存在旧表
+        let table_exists: bool = conn
+            .query_row(
+                \"SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name='file_index'\",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!(\"检查表失败: {}\", e))?;
 
-    // 检查是否存在旧表（仅 url, path 两列）
-    let table_exists: bool = conn
-        .query_row(
-            "SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name='file_index'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("检查表失败: {}", e))?;
+        if table_exists {
+            // 迁移：旧表重命名 → 建新表 → 拷贝并补齐派生字段 → 删旧表
+            conn.execute(\"ALTER TABLE file_index RENAME TO file_index_old\", [])
+                .map_err(|e| format!(\"重命名旧表失败: {}\", e))?;
+        }
 
-    if table_exists {
-        // 迁移：旧表重命名 → 建新表 → 拷贝并计算 name/is_dir → 删旧表
-        conn.execute("ALTER TABLE file_index RENAME TO file_index_old", [])
-            .map_err(|e| format!("重命名旧表失败: {}", e))?;
-    }
-
-    conn.execute_batch(
-        r#"
+        conn.execute_batch(
+            r#\"
         CREATE TABLE IF NOT EXISTS file_index (
             url TEXT NOT NULL,
             path TEXT NOT NULL,
             name TEXT NOT NULL,
             is_dir INTEGER NOT NULL,
+            name_fold TEXT NOT NULL,
+            name_ascii_fold TEXT NOT NULL,
             PRIMARY KEY (url, path)
         );
         CREATE INDEX IF NOT EXISTS idx_file_index_url ON file_index(url);
-        CREATE INDEX IF NOT EXISTS idx_file_index_is_dir_name ON file_index(is_dir, name);
-        CREATE INDEX IF NOT EXISTS idx_file_index_name ON file_index(name);
-        "#,
-    )
-    .map_err(|e| format!("创建表失败: {}", e))?;
+        CREATE INDEX IF NOT EXISTS idx_file_index_is_dir_name_fold ON file_index(is_dir, name_fold);
+        CREATE INDEX IF NOT EXISTS idx_file_index_name_fold ON file_index(name_fold);
+        \"#,
+        )
+        .map_err(|e| format!(\"创建表失败: {}\", e))?;
 
-    if table_exists {
-        let mut stmt = conn
-            .prepare("SELECT url, path FROM file_index_old")
-            .map_err(|e| format!("准备查询旧表失败: {}", e))?;
-        let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
-            .map_err(|e| format!("查询旧表失败: {}", e))?;
-        let mut insert_stmt = conn
-            .prepare("INSERT INTO file_index (url, path, name, is_dir) VALUES (?1, ?2, ?3, ?4)")
-            .map_err(|e| format!("准备插入失败: {}", e))?;
-        for row in rows {
-            let (url, path): (String, String) = row.map_err(|e| format!("读取行失败: {}", e))?;
-            let (name, is_dir) = path_to_name_and_is_dir(&path);
-            let is_dir_int = if is_dir { 1i32 } else { 0i32 };
-            insert_stmt
-                .execute(rusqlite::params![&url, &path, &name, is_dir_int])
-                .map_err(|e| format!("迁移插入失败: {}", e))?;
+        if table_exists {
+            let old_has_name = table_has_column(conn, \"file_index_old\", \"name\")?;
+            let old_has_is_dir = table_has_column(conn, \"file_index_old\", \"is_dir\")?;
+
+            let select_sql = if old_has_name && old_has_is_dir {
+                \"SELECT url, path, name, is_dir FROM file_index_old\"
+            } else {
+                \"SELECT url, path FROM file_index_old\"
+            };
+
+            let mut stmt = conn
+                .prepare(select_sql)
+                .map_err(|e| format!(\"准备查询旧表失败: {}\", e))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    if old_has_name && old_has_is_dir {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i32>(3)?,
+                        ))
+                    } else {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            String::new(),
+                            0i32,
+                        ))
+                    }
+                })
+                .map_err(|e| format!(\"查询旧表失败: {}\", e))?;
+
+            let mut insert_stmt = conn
+                .prepare(
+                    \"INSERT INTO file_index (url, path, name, is_dir, name_fold, name_ascii_fold) VALUES (?1, ?2, ?3, ?4, ?5, ?6)\",
+                )
+                .map_err(|e| format!(\"准备插入失败: {}\", e))?;
+
+            for row in rows {
+                let (url, path, mut name, mut is_dir_int): (String, String, String, i32) =
+                    row.map_err(|e| format!(\"读取行失败: {}\", e))?;
+                if !(old_has_name && old_has_is_dir) {
+                    let (n, is_dir) = path_to_name_and_is_dir(&path);
+                    name = n;
+                    is_dir_int = if is_dir { 1i32 } else { 0i32 };
+                }
+                let name_fold = fold_name_for_db(&name);
+                let name_ascii_fold = fold_name_ascii_for_db(&name);
+                insert_stmt
+                    .execute(rusqlite::params![&url, &path, &name, is_dir_int, &name_fold, &name_ascii_fold])
+                    .map_err(|e| format!(\"迁移插入失败: {}\", e))?;
+            }
+
+            conn.execute(\"DROP TABLE file_index_old\", [])
+                .map_err(|e| format!(\"删除旧表失败: {}\", e))?;
         }
-        conn.execute("DROP TABLE file_index_old", [])
-            .map_err(|e| format!("删除旧表失败: {}", e))?;
+
+        conn.execute(&format!(\"PRAGMA user_version = {}\", SCHEMA_VERSION), [])
+            .map_err(|e| format!(\"设置 user_version 失败: {}\", e))?;
     }
 
-    conn.execute(&format!("PRAGMA user_version = {}", SCHEMA_VERSION), [])
-        .map_err(|e| format!("设置 user_version 失败: {}", e))?;
+    // FTS5 虚表：file_index_fts，用于全文搜索与排序
+    let fts_exists: bool = conn
+        .query_row(
+            \"SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name='file_index_fts'\",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!(\"检查 FTS 表失败: {}\", e))?;
+
+    if !fts_exists {
+        conn.execute(
+            \"CREATE VIRTUAL TABLE file_index_fts USING fts5(url, path, name, is_dir, tokenize = 'unicode61');\",
+            [],
+        )
+        .map_err(|e| format!(\"创建 FTS5 表失败: {}\", e))?;
+
+        // 初次创建时，从已有主表全量填充一遍，避免必须重建索引
+        let mut stmt = conn
+            .prepare(\"SELECT url, path, name, is_dir FROM file_index\")
+            .map_err(|e| format!(\"准备填充 FTS5 查询失败: {}\", e))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i32>(3)?,
+                ))
+            })
+            .map_err(|e| format!(\"查询主表失败: {}\", e))?;
+
+        let mut insert_stmt = conn
+            .prepare(\"INSERT INTO file_index_fts (url, path, name, is_dir) VALUES (?1, ?2, ?3, ?4)\")
+            .map_err(|e| format!(\"准备填充 FTS5 插入失败: {}\", e))?;
+
+        for row in rows {
+            let (url, path, name, is_dir_int): (String, String, String, i32) =
+                row.map_err(|e| format!(\"读取行失败: {}\", e))?;
+            insert_stmt
+                .execute(rusqlite::params![&url, &path, &name, is_dir_int])
+                .map_err(|e| format!(\"填充 FTS5 失败: {}\", e))?;
+        }
+    }
+
     Ok(())
 }
 
@@ -104,16 +221,27 @@ pub fn save_index(url: &str, files: &[String]) -> Result<(), String> {
     let tx = conn.unchecked_transaction().map_err(|e| format!("开启事务失败: {}", e))?;
     tx.execute("DELETE FROM file_index WHERE url = ?1", [url])
         .map_err(|e| format!("清空旧索引失败: {}", e))?;
+    tx.execute("DELETE FROM file_index_fts WHERE url = ?1", [url])
+        .map_err(|e| format!("清空旧 FTS 索引失败: {}", e))?;
     let mut stmt = tx
-        .prepare("INSERT INTO file_index (url, path, name, is_dir) VALUES (?1, ?2, ?3, ?4)")
+        .prepare("INSERT INTO file_index (url, path, name, is_dir, name_fold, name_ascii_fold) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")
         .map_err(|e| format!("准备插入语句失败: {}", e))?;
+    let mut fts_stmt = tx
+        .prepare("INSERT INTO file_index_fts (url, path, name, is_dir) VALUES (?1, ?2, ?3, ?4)")
+        .map_err(|e| format!("准备 FTS 插入语句失败: {}", e))?;
     for path in files {
         let (name, is_dir) = path_to_name_and_is_dir(path);
         let is_dir_int = if is_dir { 1i32 } else { 0i32 };
-        stmt.execute(rusqlite::params![url, path.as_str(), &name, is_dir_int])
+        let name_fold = fold_name_for_db(&name);
+        let name_ascii_fold = fold_name_ascii_for_db(&name);
+        stmt.execute(rusqlite::params![url, path.as_str(), &name, is_dir_int, &name_fold, &name_ascii_fold])
             .map_err(|e| format!("插入失败: {}", e))?;
+        fts_stmt
+            .execute(rusqlite::params![url, path.as_str(), &name, is_dir_int])
+            .map_err(|e| format!("FTS 插入失败: {}", e))?;
     }
     drop(stmt);
+    drop(fts_stmt);
     tx.commit().map_err(|e| format!("提交事务失败: {}", e))?;
     Ok(())
 }
@@ -141,13 +269,171 @@ pub fn clear_index(url: &str) -> Result<(), String> {
     init_schema(&conn)?;
     conn.execute("DELETE FROM file_index WHERE url = ?1", [url])
         .map_err(|e| format!("清空索引失败: {}", e))?;
+    conn.execute("DELETE FROM file_index_fts WHERE url = ?1", [url])
+        .map_err(|e| format!("清空 FTS 索引失败: {}", e))?;
     Ok(())
 }
 
-/// 搜索索引：按新语法解析 query，仅对名称匹配，返回 (url, path, is_dir, name_segments)
+fn like_escape_literal(s: &str) -> String {
+    // 供 LIKE ... ESCAPE '\' 使用：转义 \、% 、_
+    let mut out = String::with_capacity(s.len() + 8);
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '%' => out.push_str("\\%"),
+            '_' => out.push_str("\\_"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn glob_to_like_pattern(glob: &str) -> String {
+    // 将 * ? 转成 % _，其余按 LIKE 字面量处理（并转义 % _ \）
+    let mut out = String::new();
+    for ch in glob.chars() {
+        match ch {
+            '*' => out.push('%'),
+            '?' => out.push('_'),
+            _ => out.push_str(&like_escape_literal(&ch.to_string())),
+        }
+    }
+    out
+}
+
+fn expr_has_glob(expr: &crate::search_query::Expr) -> bool {
+    use crate::search_query::Expr;
+    match expr {
+        Expr::Or(children) | Expr::And(children) => children.iter().any(expr_has_glob),
+        Expr::Not(inner) => expr_has_glob(inner),
+        Expr::Term(t) | Expr::Phrase(t) => t.contains('*') || t.contains('?'),
+    }
+}
+
+fn match_config_fts_compatible(config: &crate::search_query::MatchConfig) -> bool {
+    // FTS5 使用 unicode61 分词器，默认大小写不敏感且会做一定的规格化。
+    // 目前仅在「不区分大小写、不做 ASCII-only 折叠、不要求变音符敏感」的默认配置下走 FTS。
+    !config.case_sensitive && !config.ascii_fold_only && !config.diacritics_sensitive
+}
+
+fn escape_fts_phrase(s: &str) -> String {
+    // FTS 短语中双引号需要转义为两个双引号
+    s.replace('\"', \"\\\"\\\"\")
+}
+
+fn escape_fts_token(s: &str) -> String {
+    // Term 默认不会包含空白和操作符，这里只做最基础的双引号转义，必要时可扩展。
+    s.replace('\"', \"\\\"\\\"\")
+}
+
+fn build_fts_match_from_expr(expr: &crate::search_query::Expr) -> String {
+    use crate::search_query::Expr;
+    match expr {
+        Expr::Or(children) => {
+            let parts: Vec<String> = children.iter().map(build_fts_match_from_expr).collect();
+            if parts.len() == 1 {
+                parts[0].clone()
+            } else {
+                format!(\"({})\", parts.join(\" OR \"))
+            }
+        }
+        Expr::And(children) => {
+            let parts: Vec<String> = children.iter().map(build_fts_match_from_expr).collect();
+            if parts.len() == 1 {
+                parts[0].clone()
+            } else {
+                format!(\"({})\", parts.join(\" AND \"))
+            }
+        }
+        Expr::Not(inner) => format!(\"NOT ({})\", build_fts_match_from_expr(inner)),
+        Expr::Term(t) => escape_fts_token(t),
+        Expr::Phrase(p) => format!("\"{}\"", escape_fts_phrase(p)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_expr_has_glob_detection() {
+        let parsed = crate::search_query::parse("foo bar").unwrap();
+        let expr = parsed.expr.as_ref().unwrap();
+        assert!(!expr_has_glob(expr));
+
+        let parsed_glob = crate::search_query::parse("foo* bar").unwrap();
+        let expr_glob = parsed_glob.expr.as_ref().unwrap();
+        assert!(expr_has_glob(expr_glob));
+    }
+
+    #[test]
+    fn test_build_fts_match_basic_logic() {
+        let parsed = crate::search_query::parse("foo bar|!baz \"hello world\"").unwrap();
+        let expr = parsed.expr.as_ref().unwrap();
+        let fts = build_fts_match_from_expr(expr);
+        // 基本结构校验：包含 AND / OR / NOT 与短语
+        assert!(fts.contains("AND"));
+        assert!(fts.contains("OR"));
+        assert!(fts.contains("NOT"));
+        assert!(fts.contains("\"hello world\""));
+    }
+}
+
+fn build_sql_where_from_expr(
+    expr: &crate::search_query::Expr,
+    name_col: &str,
+    params: &mut Vec<Value>,
+    config: &crate::search_query::MatchConfig,
+) -> Result<String, String> {
+    use crate::search_query::Expr;
+    match expr {
+        Expr::Or(children) => {
+            let mut parts = Vec::new();
+            for c in children {
+                parts.push(build_sql_where_from_expr(c, name_col, params, config)?);
+            }
+            Ok(format!("({})", parts.join(" OR ")))
+        }
+        Expr::And(children) => {
+            let mut parts = Vec::new();
+            for c in children {
+                parts.push(build_sql_where_from_expr(c, name_col, params, config)?);
+            }
+            Ok(format!("({})", parts.join(" AND ")))
+        }
+        Expr::Not(inner) => Ok(format!(
+            "(NOT {})",
+            build_sql_where_from_expr(inner, name_col, params, config)?
+        )),
+        Expr::Term(t) | Expr::Phrase(t) => {
+            if t.is_empty() {
+                return Ok("(1=1)".to_string());
+            }
+            let folded = if config.case_sensitive {
+                t.clone()
+            } else if config.ascii_fold_only {
+                fold_name_ascii_for_db(t)
+            } else {
+                fold_name_for_db(t)
+            };
+            let like_pat = if t.contains('*') || t.contains('?') {
+                // 原逻辑的 glob 是“全串匹配”，但这里用 LIKE 做数据库匹配会偏“子串匹配”；
+                // 为了贴近“全串匹配”，加上两端锚定：不额外包 %。
+                glob_to_like_pattern(&folded)
+            } else {
+                format!("%{}%", like_escape_literal(&folded))
+            };
+            params.push(Value::Text(like_pat));
+            Ok(format!("({} LIKE ? ESCAPE '\\\\')", name_col))
+        }
+    }
+}
+
+/// 搜索索引：按新语法解析 query，优先使用 FTS5 做匹配与排序，Rust 内存仅负责高亮与兜底校验
 pub fn search_index(
     query: &str,
     limit: u32,
+    sort_by: Option<&str>,
 ) -> Result<Vec<(String, String, bool, Vec<(String, bool)>)>, String> {
     let conn = open_db()?;
     init_schema(&conn)?;
@@ -157,38 +443,139 @@ pub fn search_index(
         return Ok(Vec::new());
     }
 
-    // 读取候选行（粗筛：可后续加 LIKE 预过滤以优化性能）
-    const CANDIDATE_LIMIT: i64 = 10_000;
-    let mut stmt = conn
-        .prepare(
-            "SELECT url, path, name, is_dir FROM file_index ORDER BY url, path LIMIT ?1",
-        )
-        .map_err(|e| format!("准备搜索语句失败: {}", e))?;
-    let rows = stmt
-        .query_map([CANDIDATE_LIMIT], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i32>(3)?,
-            ))
-        })
-        .map_err(|e| format!("搜索失败: {}", e))?;
+    let parsed = crate::search_query::parse(query)?;
+    let expr = match &parsed.expr {
+        Some(e) => e,
+        None => return Ok(Vec::new()),
+    };
+
+    // 归一化排序键：relevance / name / path / type
+    let sort_key = match sort_by.unwrap_or("relevance") {
+        "name" => "name",
+        "path" => "path",
+        "type" => "type",
+        _ => "relevance",
+    };
+
+    // 先决定是否可以使用 FTS5：仅在默认大小写/变音设置，且查询中不含通配符时启用
+    let use_fts = match_config_fts_compatible(&parsed.config) && !expr_has_glob(expr);
+
+    // 先收集候选行，再用统一的内存逻辑做高亮与兜底校验
+    let mut candidates: Vec<(String, String, String, i32)> = Vec::new();
+
+    if use_fts {
+        let fts_expr = build_fts_match_from_expr(expr);
+        let mut sql = String::from(
+            "SELECT url, path, name, is_dir FROM file_index_fts WHERE file_index_fts MATCH ? ",
+        );
+        // 类型过滤（file:/folder:）
+        match parsed.config.type_filter {
+            crate::search_query::TypeFilter::Both => {}
+            crate::search_query::TypeFilter::FileOnly => sql.push_str("AND is_dir = 0 "),
+            crate::search_query::TypeFilter::FolderOnly => sql.push_str("AND is_dir = 1 "),
+        }
+        // 取一个略大于前端 limit 的上限，避免高亮兜底后不足
+        let db_limit: i64 = ((limit as i64) * 5).clamp(limit as i64, 10_000);
+        // 按排序键决定 ORDER BY
+        match sort_key {
+            "name" => sql.push_str("ORDER BY name COLLATE NOCASE, url, path "),
+            "path" => sql.push_str("ORDER BY path COLLATE NOCASE "),
+            "type" => sql.push_str("ORDER BY is_dir DESC, name COLLATE NOCASE, url, path "),
+            _ => sql.push_str("ORDER BY bm25(file_index_fts), url, path "),
+        }
+        sql.push_str("LIMIT ?1");
+
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("准备 FTS 搜索语句失败: {}", e))?;
+        let rows = stmt
+            .query_map(rusqlite::params![fts_expr, db_limit], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i32>(3)?,
+                ))
+            })
+            .map_err(|e| format!("FTS 搜索失败: {}", e))?;
+        for row in rows {
+            candidates.push(row.map_err(|e| format!("读取行失败: {}", e))?);
+        }
+    } else {
+        // 回退到原有 LIKE + 折叠列逻辑
+        let name_col = if parsed.config.case_sensitive {
+            "name"
+        } else if parsed.config.ascii_fold_only {
+            "name_ascii_fold"
+        } else {
+            "name_fold"
+        };
+
+        let mut params: Vec<Value> = Vec::new();
+        let mut where_parts = Vec::new();
+        where_parts.push(build_sql_where_from_expr(
+            expr,
+            name_col,
+            &mut params,
+            &parsed.config,
+        )?);
+        match parsed.config.type_filter {
+            crate::search_query::TypeFilter::Both => {}
+            crate::search_query::TypeFilter::FileOnly => {
+                where_parts.push("(is_dir = 0)".to_string())
+            }
+            crate::search_query::TypeFilter::FolderOnly => {
+                where_parts.push("(is_dir = 1)".to_string())
+            }
+        }
+
+        let db_limit: i64 = ((limit as i64) * 50).clamp(500, 50_000);
+        params.push(Value::Integer(db_limit));
+
+        let mut sql = format!(
+            "SELECT url, path, name, is_dir FROM file_index WHERE {} ",
+            where_parts.join(" AND ")
+        );
+        match sort_key {
+            "name" => sql.push_str("ORDER BY name COLLATE NOCASE, url, path "),
+            "path" => sql.push_str("ORDER BY path COLLATE NOCASE "),
+            "type" => sql.push_str("ORDER BY is_dir DESC, name COLLATE NOCASE, url, path "),
+            // 回退路径下没有 bm25，只能按 URL+path 做稳定排序
+            _ => sql.push_str("ORDER BY url, path "),
+        }
+        sql.push_str("LIMIT ?");
+
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("准备搜索语句失败: {}", e))?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i32>(3)?,
+                ))
+            })
+            .map_err(|e| format!("搜索失败: {}", e))?;
+        for row in rows {
+            candidates.push(row.map_err(|e| format!("读取行失败: {}", e))?);
+        }
+    }
 
     let mut out = Vec::new();
-    for row in rows {
-        let (url, path, name, is_dir_int): (String, String, String, i32) =
-            row.map_err(|e| format!("读取行失败: {}", e))?;
+    for (url, path, name, is_dir_int) in candidates {
         let is_dir = is_dir_int != 0;
         let (matched, ranges) =
             crate::search_query::parse_and_match(query, &name, is_dir, None)
                 .map_err(|e| format!("匹配失败: {}", e))?;
-        if matched {
-            let segments = crate::search_query::ranges_to_segments(&name, &ranges);
-            out.push((url, path, is_dir, segments));
-            if out.len() >= limit as usize {
-                break;
-            }
+        if !matched {
+            continue;
+        }
+        let segments = crate::search_query::ranges_to_segments(&name, &ranges);
+        out.push((url, path, is_dir, segments));
+        if out.len() >= limit as usize {
+            break;
         }
     }
     Ok(out)

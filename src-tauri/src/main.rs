@@ -197,9 +197,13 @@ fn clear_index(url: String) -> Result<(), String> {
 
 /// 搜索所有仓库的索引（按新语法仅匹配名称，返回条目及名称高亮分段）
 #[tauri::command]
-fn search_index(query: String, limit: Option<u32>) -> Result<Vec<IndexEntry>, String> {
+fn search_index(
+    query: String,
+    limit: Option<u32>,
+    sort_by: Option<String>,
+) -> Result<Vec<IndexEntry>, String> {
     let limit = limit.unwrap_or(200);
-    let rows = database::search_index(&query, limit)?;
+    let rows = database::search_index(&query, limit, sort_by.as_deref())?;
     Ok(rows
         .into_iter()
         .map(|(url, path, is_dir, segs)| IndexEntry {
