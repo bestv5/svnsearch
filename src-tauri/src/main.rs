@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 use tauri::menu::MenuBuilder;
+use tauri::{Emitter, Manager};
 
 mod database;
 
