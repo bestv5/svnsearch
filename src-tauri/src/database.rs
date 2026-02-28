@@ -350,73 +350,101 @@ pub fn search_index(
     // 先收集候选行，再用统一的内存逻辑做高亮与兜底校验
     let mut candidates: Vec<(String, String, String, i32)> = Vec::new();
 
-    if use_fts {
-        append_debug_log(&format!(
-            "[svnsearch][fts] 即将走 FTS 搜索，原始 query=\"{}\", config={:?}",
-            query, parsed.config
-        ));
-        let fts_expr = build_fts_match_from_expr(expr);
-        append_debug_log(&format!(
-            "[svnsearch][fts] 构造出的 FTS match 表达式: {}",
-            fts_expr
-        ));
-        // 使用显式编号的占位符，避免参数个数与占位符个数不一致
-        let mut sql = String::from(
-            "SELECT url, path, name, is_dir FROM file_index_fts WHERE file_index_fts MATCH ?1 ",
-        );
-        // 类型过滤（file:/folder:）
-        match parsed.config.type_filter {
-            crate::search_query::TypeFilter::Both => {}
-            crate::search_query::TypeFilter::FileOnly => sql.push_str("AND is_dir = 0 "),
-            crate::search_query::TypeFilter::FolderOnly => sql.push_str("AND is_dir = 1 "),
-        }
-        // 取一个略大于前端 limit 的上限，避免高亮兜底后不足
-        let db_limit: i64 = ((limit as i64) * 5).clamp(limit as i64, 10_000);
-        append_debug_log(&format!(
-            "[svnsearch][fts] FTS SQL: {} | limit={} (db_limit={})",
-            sql, limit, db_limit
-        ));
-        // 按排序键决定 ORDER BY
-        match sort_key {
-            "name" => sql.push_str("ORDER BY name COLLATE NOCASE, url, path "),
-            "path" => sql.push_str("ORDER BY path COLLATE NOCASE "),
-            "type" => sql.push_str("ORDER BY is_dir DESC, name COLLATE NOCASE, url, path "),
-            _ => sql.push_str("ORDER BY bm25(file_index_fts), url, path "),
-        }
-        sql.push_str("LIMIT ?2");
+    // 优先尝试 FTS，失败或不兼容时回退到 LIKE 路径
+    let mut used_fts = false;
 
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| {
+    if use_fts {
+        let fts_result: Result<(), String> = (|| {
+            append_debug_log(&format!(
+                "[svnsearch][fts] 即将走 FTS 搜索，原始 query=\"{}\", config={:?}",
+                query, parsed.config
+            ));
+            let fts_expr = build_fts_match_from_expr(expr);
+            append_debug_log(&format!(
+                "[svnsearch][fts] 构造出的 FTS match 表达式: {}",
+                fts_expr
+            ));
+
+            // 暂时仅在 ASCII 表达式下启用 FTS，避免某些平台构建下的兼容性问题（如 CJK / 特殊符号）
+            if !fts_expr.is_ascii() {
+                append_debug_log(
+                    "[svnsearch][fts] FTS 表达式包含非 ASCII 字符，回退到 LIKE 搜索以保证稳定性",
+                );
+                return Err("FTS 表达式包含非 ASCII 字符".to_string());
+            }
+
+            // 使用显式编号的占位符，避免参数个数与占位符个数不一致
+            let mut sql = String::from(
+                "SELECT url, path, name, is_dir FROM file_index_fts WHERE file_index_fts MATCH ?1 ",
+            );
+            // 类型过滤（file:/folder:）
+            match parsed.config.type_filter {
+                crate::search_query::TypeFilter::Both => {}
+                crate::search_query::TypeFilter::FileOnly => sql.push_str("AND is_dir = 0 "),
+                crate::search_query::TypeFilter::FolderOnly => sql.push_str("AND is_dir = 1 "),
+            }
+            // 取一个略大于前端 limit 的上限，避免高亮兜底后不足
+            let db_limit: i64 = ((limit as i64) * 5).clamp(limit as i64, 10_000);
+            // 按排序键决定 ORDER BY
+            match sort_key {
+                "name" => sql.push_str("ORDER BY name COLLATE NOCASE, url, path "),
+                "path" => sql.push_str("ORDER BY path COLLATE NOCASE "),
+                "type" => sql.push_str("ORDER BY is_dir DESC, name COLLATE NOCASE, url, path "),
+                _ => sql.push_str("ORDER BY bm25(file_index_fts), url, path "),
+            }
+            sql.push_str("LIMIT ?2");
+            // 日志中记录完整 SQL（含 ORDER BY 和 LIMIT）
+            append_debug_log(&format!(
+                "[svnsearch][fts] FTS SQL: {} | limit={} (db_limit={})",
+                sql, limit, db_limit
+            ));
+
+            let mut stmt = conn.prepare(&sql).map_err(|e| {
+                let msg = e.to_string();
                 append_debug_log(&format!(
                     "[svnsearch][fts] 准备 FTS 搜索语句失败: {} | sql={}",
-                    e, sql
+                    msg, sql
                 ));
-                format!("准备 FTS 搜索语句失败: {}", e)
+                msg
             })?;
-        let rows = stmt
-            .query_map(rusqlite::params![fts_expr, db_limit], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i32>(3)?,
-                ))
-            })
-            .map_err(|e| {
-                append_debug_log(&format!(
-                    "[svnsearch][fts] FTS 搜索失败: {} | sql={} | match_expr={} | limit={}",
-                    e, sql, fts_expr, db_limit
-                ));
-                format!("FTS 搜索失败: {}", e)
-            })?;
-        for row in rows {
-            candidates.push(row.map_err(|e| {
-                append_debug_log(&format!("[svnsearch][fts] 读取行失败: {}", e));
-                format!("读取行失败: {}", e)
-            })?);
+            let rows = stmt
+                .query_map(rusqlite::params![fts_expr, db_limit], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i32>(3)?,
+                    ))
+                })
+                .map_err(|e| {
+                    let msg = e.to_string();
+                    append_debug_log(&format!(
+                        "[svnsearch][fts] FTS 搜索失败: {} | sql={} | match_expr={} | limit={}",
+                        msg, sql, fts_expr, db_limit
+                    ));
+                    msg
+                })?;
+            for row in rows {
+                candidates.push(row.map_err(|e| {
+                    let msg = e.to_string();
+                    append_debug_log(&format!("[svnsearch][fts] 读取行失败: {}", msg));
+                    msg
+                })?);
+            }
+            Ok(())
+        })();
+
+        if let Err(e) = fts_result {
+            append_debug_log(&format!(
+                "[svnsearch][fts] FTS 分支出现错误，将回退到 LIKE 搜索: {}",
+                e
+            ));
+        } else {
+            used_fts = true;
         }
-    } else {
+    }
+
+    if !used_fts {
         // 回退到原有 LIKE + 折叠列逻辑
         let name_col = if parsed.config.case_sensitive {
             "name"
