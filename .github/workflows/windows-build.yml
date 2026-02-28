@@ -68,8 +68,8 @@ jobs:
 
       - name: Build app with Tauri
         run: |
-          # 只构建 Windows bundle，减少不必要的安装包类型（如 MSI）以加快单次构建
-          npx @tauri-apps/cli build --verbose --bundles windows
+          # 只构建 NSIS（会生成 bundle/windows 目录供便携 zip 使用），不构建 MSI 以加快单次构建
+          npx @tauri-apps/cli build --verbose --bundles nsis
         shell: pwsh
 
       - name: Verify build artifacts

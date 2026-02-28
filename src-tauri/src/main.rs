@@ -2,9 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::process::Command;
-use tauri::{
-    CustomMenuItem, Manager, Menu, MenuItem,
-};
+use tauri::menu::MenuBuilder;
 
 mod database;
 
@@ -228,11 +226,11 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
             .stdin(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| format!("复制到剪贴板失败: {}", e))?;
-        
+
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(text.as_bytes()).ok();
         }
-        
+
         child.wait().map_err(|e| format!("复制到剪贴板失败: {}", e))?;
     }
 
@@ -244,11 +242,11 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
             .stdin(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| format!("复制到剪贴板失败: {}", e))?;
-        
+
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(text.as_bytes()).ok();
         }
-        
+
         child.wait().map_err(|e| format!("复制到剪贴板失败: {}", e))?;
     }
 
@@ -260,11 +258,11 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
             .stdin(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| format!("复制到剪贴板失败: {}", e))?;
-        
+
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(text.as_bytes()).ok();
         }
-        
+
         child.wait().map_err(|e| format!("复制到剪贴板失败: {}", e))?;
     }
 
@@ -272,26 +270,28 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
 }
 
 fn main() {
-    let settings_item = CustomMenuItem::new("open-settings".to_string(), "设置");
-    let app_menu = Menu::new()
-        .add_item(settings_item)
-        .add_native_item(MenuItem::Quit);
-
     tauri::Builder::default()
-        .menu(app_menu)
-        .on_menu_event(|event| {
-            if event.menu_item_id() == "open-settings" {
-                let _ = event.window().emit("open-settings", ());
-            }
-        })
         .setup(|app| {
-            // 设置窗口
-            let window = app.get_window("main").unwrap();
-            window.set_title("SVN 文件搜索").ok();
+            let handle = app.handle().clone();
+            let menu = MenuBuilder::new(&handle)
+                .text("open-settings", "设置")
+                .quit_with_text("退出")
+                .build()
+                .map_err(|e| e.to_string())?;
+            app.set_menu(menu);
 
-            #[cfg(debug_assertions)]
-            {
-                window.open_devtools();
+            app.on_menu_event(move |app, event| {
+                if event.id().as_ref() == "open-settings" {
+                    let _ = app.emit("open-settings", ());
+                }
+            });
+
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_title("SVN 文件搜索");
+                #[cfg(debug_assertions)]
+                {
+                    let _ = win.open_devtools();
+                }
             }
 
             Ok(())
