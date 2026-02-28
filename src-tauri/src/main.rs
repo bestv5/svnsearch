@@ -279,7 +279,7 @@ fn main() {
                 .quit_with_text("退出")
                 .build()
                 .map_err(|e| e.to_string())?;
-            app.set_menu(menu);
+            let _ = app.set_menu(menu);
 
             app.on_menu_event(move |app, event| {
                 if event.id().as_ref() == "open-settings" {

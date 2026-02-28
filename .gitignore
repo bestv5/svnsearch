@@ -40,3 +40,6 @@ target/
 # Node
 node_modules/
 .DS_Store
+
+# Tauri 生成目录（由 tauri dev/build 自动生成）
+src-tauri/gen/
