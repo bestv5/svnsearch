@@ -68,14 +68,14 @@ jobs:
 
       - name: Build app with Tauri
         run: |
-          # 只构建 NSIS（会生成 bundle/windows 目录供便携 zip 使用），不构建 MSI 以加快单次构建
+          # 只构建 NSIS（输出在 bundle/nsis，供便携 zip 使用），不构建 MSI 以加快单次构建
           npx @tauri-apps/cli build --verbose --bundles nsis
         shell: pwsh
 
       - name: Verify build artifacts
         run: |
           Write-Host "Checking for Windows build artifacts..."
-          $bundlePath = "src-tauri/target/release/bundle/windows"
+          $bundlePath = "src-tauri/target/release/bundle/nsis"
           $msiPath = "src-tauri/target/release/bundle/msi"
           $releasePath = "src-tauri/target/release"
 
@@ -109,48 +109,43 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          # 优先从 bundle/windows 取便携文件夹（包含 exe + 依赖），图标与运行更稳定
+          # Tauri 2 的 Windows 输出在 bundle/nsis（不是 bundle/windows）
           $productName = "SVNSearch"
-          $bundleWindowsDir = "src-tauri/target/release/bundle/windows"
-          $portableRoot = $null
+          $bundleNsisDir = "src-tauri/target/release/bundle/nsis"
+          $releaseDir = "src-tauri/target/release"
+          $outDir = "dist"
+          $zipPath = Join-Path $outDir "svnsearch-windows-portable.zip"
 
-          if (Test-Path $bundleWindowsDir) {
-            $exe = Get-ChildItem $bundleWindowsDir -Recurse -Filter "$productName.exe" | Select-Object -First 1
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+
+          # 优先从 bundle/nsis 找已打包的 exe 所在目录（同目录下仅有运行所需文件）
+          $filesToZip = $null
+          if (Test-Path $bundleNsisDir) {
+            $exe = Get-ChildItem $bundleNsisDir -Recurse -Filter "$productName.exe" | Select-Object -First 1
             if ($exe) {
               $portableRoot = $exe.Directory.FullName
-              Write-Host "Found bundled portable app dir: $portableRoot"
-            } else {
-              Write-Host "No $productName.exe found under $bundleWindowsDir, fallback to release exe."
+              Write-Host "Using bundle/nsis app dir: $portableRoot"
+              $filesToZip = (Get-ChildItem -Path $portableRoot -File).FullName
             }
-          } else {
-            Write-Host "Bundle windows directory not found: $bundleWindowsDir, fallback to release exe."
           }
 
-          if (-not $portableRoot) {
-            $releaseDir = "src-tauri/target/release"
-            if (-not (Test-Path $releaseDir)) {
-              Write-Error "Release directory not found: $releaseDir"
+          # Fallback：从 release 只取 exe + dll。优先用 productName 的 SVNSearch.exe（Tauri 打包时生成），否则用 Cargo 的 svnsearch-desktop.exe，只打一个主程序 exe
+          if (-not $filesToZip -or $filesToZip.Count -eq 0) {
+            if (-not (Test-Path $releaseDir)) { Write-Error "Release directory not found: $releaseDir" }
+            $mainExe = Get-ChildItem $releaseDir -Filter "$productName.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $mainExe) {
+              $mainExe = Get-ChildItem $releaseDir -Filter "*.exe" | Where-Object { $_.Name -notmatch "setup|\.test\.|\.bench\." } | Select-Object -First 1
             }
-
-            $exe = Get-ChildItem $releaseDir -Filter "*.exe" | Select-Object -First 1
-            if (-not $exe) {
-              Write-Error "No Windows executable (*.exe) found in $releaseDir"
-            }
-
-            $portableRoot = $exe.Directory.FullName
-            Write-Host "Found release executable: $($exe.FullName)"
+            if (-not $mainExe) { Write-Error "No app executable found in $releaseDir" }
+            Write-Host "Fallback: packaging only $($mainExe.Name) + dll from release (no deps/build)"
+            $filesToZip = @($mainExe.FullName) + (Get-ChildItem $releaseDir -Filter "*.dll").FullName
           }
 
-          $outDir = "dist"
-          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          if (-not $filesToZip -or $filesToZip.Count -eq 0) { Write-Error "No files to include in portable zip" }
 
-          $zipPath = Join-Path $outDir "svnsearch-windows-portable.zip"
-          if (Test-Path $zipPath) {
-            Remove-Item $zipPath -Force
-          }
-
-          Compress-Archive -Path (Join-Path $portableRoot "*") -DestinationPath $zipPath -Force
-          Write-Host "Created portable archive at $zipPath"
+          Compress-Archive -Path $filesToZip -DestinationPath $zipPath -Force
+          Write-Host "Created portable archive at $zipPath ($(($filesToZip | Measure-Object).Count) files)"
         shell: pwsh
 
       - name: Upload Windows portable bundle

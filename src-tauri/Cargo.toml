@@ -3,6 +3,11 @@ name = "svnsearch-desktop"
 version = "1.0.0"
 edition = "2021"
 
+# 只生成一个 exe，名称与 productName 一致，避免 target/release 下出现 svnsearch-desktop.exe 和 SVNSearch.exe 两份
+[[bin]]
+name = "SVNSearch"
+path = "src/main.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
