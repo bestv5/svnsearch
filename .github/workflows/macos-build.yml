@@ -17,15 +17,6 @@ jobs:
           cache: 'npm'
           cache-dependency-path: package-lock.json
 
-      - name: Cache Rust toolchain
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.rustup
-          key: ${{ runner.os }}-rust-toolchain-stable
-          restore-keys: |
-            ${{ runner.os }}-rust-toolchain-
-
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
