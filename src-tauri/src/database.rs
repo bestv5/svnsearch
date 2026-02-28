@@ -365,14 +365,6 @@ pub fn search_index(
                 fts_expr
             ));
 
-            // 暂时仅在 ASCII 表达式下启用 FTS，避免某些平台构建下的兼容性问题（如 CJK / 特殊符号）
-            if !fts_expr.is_ascii() {
-                append_debug_log(
-                    "[svnsearch][fts] FTS 表达式包含非 ASCII 字符，回退到 LIKE 搜索以保证稳定性",
-                );
-                return Err("FTS 表达式包含非 ASCII 字符".to_string());
-            }
-
             // 使用显式编号的占位符，避免参数个数与占位符个数不一致
             let mut sql = String::from(
                 "SELECT url, path, name, is_dir FROM file_index_fts WHERE file_index_fts MATCH ?1 ",
