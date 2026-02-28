@@ -2,6 +2,8 @@
 name = "svnsearch-desktop"
 version = "1.0.0"
 edition = "2021"
+# 关闭 Cargo 自动发现二进制（否则会同时生成 package 名的 exe）
+autobins = false
 
 # 只生成一个 exe，名称与 productName 一致，避免 target/release 下出现 svnsearch-desktop.exe 和 SVNSearch.exe 两份
 [[bin]]

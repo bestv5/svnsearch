@@ -66,40 +66,44 @@ jobs:
             ${{ runner.os }}-cargo-${{ steps.rust-version.outputs.toolchain }}-
             ${{ runner.os }}-cargo-
 
+      - name: Clean stale bundle artifacts
+        run: |
+          # 由于缓存了 src-tauri/target，可能残留上一次构建出来的 msi/nsis/旧 exe，导致看起来“生成了很多包”
+          Remove-Item "src-tauri/target/release/bundle" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item "src-tauri/target/release/*.msi" -Force -ErrorAction SilentlyContinue
+          Remove-Item "src-tauri/target/release/*-setup.exe" -Force -ErrorAction SilentlyContinue
+        shell: pwsh
+
       - name: Build app with Tauri
         run: |
-          # 只构建 NSIS（输出在 bundle/nsis，供便携 zip 使用），不构建 MSI 以加快单次构建
-          npx @tauri-apps/cli build --verbose --bundles nsis
+          # 只编译，严禁生成任何安装包/Bundle（nsis/msi 等）
+          npx @tauri-apps/cli build --verbose --no-bundle
         shell: pwsh
 
       - name: Verify build artifacts
         run: |
           Write-Host "Checking for Windows build artifacts..."
-          $bundlePath = "src-tauri/target/release/bundle/nsis"
-          $msiPath = "src-tauri/target/release/bundle/msi"
           $releasePath = "src-tauri/target/release"
 
-          if ((Test-Path $bundlePath) -or (Test-Path $msiPath) -or (Test-Path $releasePath)) {
-            Write-Host "✓ Bundle directory found."
+          # 由于我们使用了 --no-bundle，出现任何 bundle 目录都视为违规（可能来自缓存残留）
+          $bundleRoot = "src-tauri/target/release/bundle"
+          if (Test-Path $bundleRoot) {
+            Write-Host "✗ Bundle directory must not exist (portable-only build), found: $bundleRoot"
+            Get-ChildItem -Path $bundleRoot -Recurse | Format-Table FullName, Length -AutoSize
+            exit 1
+          }
+
+          if (Test-Path $releasePath) {
+            Write-Host "✓ Release directory found."
             Write-Host ""
-            Write-Host "Contents:"
-            if (Test-Path $bundlePath) {
-              Get-ChildItem -Path $bundlePath -Recurse | Format-Table FullName, Length -AutoSize
-            }
-            if (Test-Path $msiPath) {
-              Get-ChildItem -Path $msiPath -Recurse | Format-Table FullName, Length -AutoSize
-            }
-            if (Test-Path $releasePath) {
-              Write-Host ""
-              Write-Host "Release executables:"
-              Get-ChildItem -Path $releasePath -Filter "*.exe" | Format-Table FullName, Length -AutoSize
-            }
+            Write-Host "Release executables:"
+            Get-ChildItem -Path $releasePath -Filter "*.exe" | Format-Table FullName, Length -AutoSize
           } else {
-            Write-Host "✗ Bundle directory not found!"
+            Write-Host "✗ Release directory not found!"
             Write-Host ""
             Write-Host "Release directory contents:"
-            if (Test-Path "src-tauri/target/release") {
-              Get-ChildItem -Path "src-tauri/target/release" -Force | Format-Table Name, Length
+            if (Test-Path "src-tauri/target") {
+              Get-ChildItem -Path "src-tauri/target" -Force | Format-Table Name, Length
             }
             exit 1
           }
@@ -109,9 +113,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          # Tauri 2 的 Windows 输出在 bundle/nsis（不是 bundle/windows）
           $productName = "SVNSearch"
-          $bundleNsisDir = "src-tauri/target/release/bundle/nsis"
           $releaseDir = "src-tauri/target/release"
           $outDir = "dist"
           $zipPath = Join-Path $outDir "svnsearch-windows-portable.zip"
@@ -119,28 +121,14 @@ jobs:
           New-Item -ItemType Directory -Force -Path $outDir | Out-Null
           if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 
-          # 优先从 bundle/nsis 找已打包的 exe 所在目录（同目录下仅有运行所需文件）
-          $filesToZip = $null
-          if (Test-Path $bundleNsisDir) {
-            $exe = Get-ChildItem $bundleNsisDir -Recurse -Filter "$productName.exe" | Select-Object -First 1
-            if ($exe) {
-              $portableRoot = $exe.Directory.FullName
-              Write-Host "Using bundle/nsis app dir: $portableRoot"
-              $filesToZip = (Get-ChildItem -Path $portableRoot -File).FullName
-            }
-          }
-
-          # Fallback：从 release 只取 exe + dll。优先用 productName 的 SVNSearch.exe（Tauri 打包时生成），否则用 Cargo 的 svnsearch-desktop.exe，只打一个主程序 exe
-          if (-not $filesToZip -or $filesToZip.Count -eq 0) {
-            if (-not (Test-Path $releaseDir)) { Write-Error "Release directory not found: $releaseDir" }
-            $mainExe = Get-ChildItem $releaseDir -Filter "$productName.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $mainExe) {
-              $mainExe = Get-ChildItem $releaseDir -Filter "*.exe" | Where-Object { $_.Name -notmatch "setup|\.test\.|\.bench\." } | Select-Object -First 1
-            }
-            if (-not $mainExe) { Write-Error "No app executable found in $releaseDir" }
-            Write-Host "Fallback: packaging only $($mainExe.Name) + dll from release (no deps/build)"
-            $filesToZip = @($mainExe.FullName) + (Get-ChildItem $releaseDir -Filter "*.dll").FullName
-          }
+          # 只允许便携包：从 release 目录取主程序 exe + dll（严禁从 bundle 目录取文件）
+          if (-not (Test-Path $releaseDir)) { Write-Error "Release directory not found: $releaseDir" }
+          $mainExe = Get-ChildItem $releaseDir -Filter "$productName.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $mainExe) { Write-Error "Main exe not found: $releaseDir\\$productName.exe" }
+          Write-Host "Packaging portable zip: $($mainExe.Name) + dll from release"
+          $dllFiles = @(Get-ChildItem $releaseDir -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+          $filesToZip = @($mainExe.FullName) + $dllFiles
+          $filesToZip = @($filesToZip | Where-Object { $_ -and $_.Trim().Length -gt 0 })
 
           if (-not $filesToZip -or $filesToZip.Count -eq 0) { Write-Error "No files to include in portable zip" }
 
