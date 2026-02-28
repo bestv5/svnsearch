@@ -218,6 +218,12 @@ fn search_index(
         .collect())
 }
 
+/// 开发环境辅助命令：在本机数据库中生成一些带中文名称的伪造索引数据
+#[tauri::command]
+fn dev_seed_dummy_data() -> Result<(), String> {
+    database::seed_dummy_dev_data()
+}
+
 /// 自动检测 SVN 命令路径
 #[tauri::command]
 fn detect_svn_path() -> Option<String> {
@@ -327,6 +333,13 @@ fn main() {
                 #[cfg(debug_assertions)]
                 {
                     let _ = win.open_devtools();
+
+                    // 开发模式下自动生成一批本地伪造索引数据，方便测试中文搜索/FTS
+                    if let Err(e) = crate::database::seed_dummy_dev_data() {
+                        eprintln!("[svnsearch][dev] 初始化伪造索引数据失败: {}", e);
+                    } else {
+                        eprintln!("[svnsearch][dev] 已为开发环境生成伪造索引数据");
+                    }
                 }
             }
 
@@ -341,6 +354,7 @@ fn main() {
             load_index,
             clear_index,
             search_index,
+            dev_seed_dummy_data,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

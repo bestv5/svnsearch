@@ -120,6 +120,21 @@
             自动检测到：{{ svnPathAutoDetected }}
           </div>
         </div>
+
+        <div class="form-group">
+          <label>每次搜索最大结果数</label>
+          <input
+            v-model.number="searchLimit"
+            type="number"
+            min="50"
+            max="5000"
+            step="50"
+            :disabled="isLoading || isSearching"
+          />
+          <div class="hint-text">
+            默认 200，当前设置为 {{ searchLimit }}。建议 500～1000，数值越大单次搜索越慢。
+          </div>
+        </div>
       </div>
 
       <div class="config-panel">
@@ -269,6 +284,7 @@ const sortBy = ref('relevance')
 // 配置管理
 const STORAGE_KEY = 'svnsearch_svn_profiles'
 const STORAGE_SVN_PATH_KEY = 'svnsearch_svn_path'
+const STORAGE_SEARCH_LIMIT_KEY = 'svnsearch_search_limit'
 const profiles = ref([])
 const selectedProfileId = ref(null)
 let unlistenOpenSettings = null
@@ -277,6 +293,9 @@ let progressTimer = null
 // SVN 路径配置
 const svnPath = ref('')
 const svnPathAutoDetected = ref('')
+
+// 搜索相关配置
+const searchLimit = ref(200)
 
 // 仓库标题（保存在 profile 中）
 const repoTitle = ref('')
@@ -353,9 +372,34 @@ function persistSvnPath() {
   }
 }
 
+function loadSearchLimit() {
+  try {
+    const raw = localStorage.getItem(STORAGE_SEARCH_LIMIT_KEY)
+    if (raw) {
+      const n = Number(raw)
+      if (!Number.isNaN(n) && n > 0) {
+        searchLimit.value = Math.min(Math.max(Math.floor(n), 50), 5000)
+      }
+    }
+  } catch (e) {
+    console.error('加载搜索上限失败', e)
+  }
+}
+
+function persistSearchLimit() {
+  try {
+    const n = Math.min(Math.max(Math.floor(searchLimit.value || 0), 50), 5000)
+    searchLimit.value = n
+    localStorage.setItem(STORAGE_SEARCH_LIMIT_KEY, String(n))
+  } catch (e) {
+    console.error('保存搜索上限失败', e)
+  }
+}
+
 onMounted(() => {
   loadProfiles()
   loadSvnPath()
+  loadSearchLimit()
   // 回显选中配置到表单
   if (profiles.value.length > 0) {
     const selected =
@@ -415,6 +459,14 @@ watch(
 watch(svnPath, () => {
   persistSvnPath()
 })
+
+watch(
+  searchLimit,
+  () => {
+    persistSearchLimit()
+  },
+  { flush: 'post' }
+)
 
 function useProfile(profile) {
   selectedProfileId.value = profile.id
@@ -588,7 +640,7 @@ async function performSearch() {
   try {
     const entries = await invoke('search_index', {
       query,
-      limit: 200,
+      limit: searchLimit.value || 200,
       sort_by: sortBy.value
     })
     if (token !== latestSearchToken) return

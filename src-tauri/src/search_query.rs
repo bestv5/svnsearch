@@ -1,5 +1,6 @@
-//! 搜索查询解析与匹配：操作符 AND/OR/NOT、引号短语、通配符 *?、修饰符 ascii/case/diacritics/file/folder。
-//! 默认仅对「名称」（文件名/目录名）匹配，不匹配完整 path。
+//! 搜索查询解析与匹配：操作符 AND/OR/NOT、引号短语、通配符 *?、
+//! 修饰符 ascii/case/diacritics/file/folder/path。
+//! 默认仅对「名称」（文件名/目录名）匹配；使用 path: 修饰符时，对完整 URL+path 匹配。
 
 use regex::Regex;
 use std::ops::Range;
@@ -15,6 +16,8 @@ pub struct MatchConfig {
     pub diacritics_sensitive: bool,
     /// 类型过滤
     pub type_filter: TypeFilter,
+    /// 是否按完整 URL+path 匹配（通过 path: 修饰符开启）
+    pub path_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -129,7 +132,12 @@ fn find_substring_ranges(
             orig.len()
         };
         ranges.push(byte_start..byte_end);
-        start_byte = abs_start_byte + 1;
+        // 下一个搜索起点需要保证是 UTF-8 字符边界，避免切在多字节字符中间导致 panic
+        let mut next = abs_start_byte + 1;
+        while next < folded_orig.len() && !folded_orig.is_char_boundary(next) {
+            next += 1;
+        }
+        start_byte = next;
     }
     ranges
 }
@@ -342,6 +350,7 @@ enum ModifierKind {
     Diacritics,
     File,
     Folder,
+    Path,
 }
 
 fn tokenize(s: &str) -> Result<Vec<Token>, String> {
@@ -392,6 +401,7 @@ fn tokenize(s: &str) -> Result<Vec<Token>, String> {
                 "diacritics" => ModifierKind::Diacritics,
                 "file" => ModifierKind::File,
                 "folder" => ModifierKind::Folder,
+                 "path" => ModifierKind::Path,
                 _ => {
                     out.push(Token::Term(word));
                     continue;
@@ -416,6 +426,7 @@ fn extract_modifiers(tokens: Vec<Token>) -> (MatchConfig, Vec<Token>) {
                 ModifierKind::Diacritics => config.diacritics_sensitive = true,
                 ModifierKind::File => config.type_filter = TypeFilter::FileOnly,
                 ModifierKind::Folder => config.type_filter = TypeFilter::FolderOnly,
+                ModifierKind::Path => config.path_only = true,
             },
             other => rest.push(other),
         }

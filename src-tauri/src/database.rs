@@ -311,7 +311,8 @@ fn build_sql_where_from_expr(
                 format!("%{}%", like_escape_literal(&folded))
             };
             params.push(Value::Text(like_pat));
-            Ok(format!("({} LIKE ? ESCAPE '\\\\')", name_col))
+            // SQLite 要求 ESCAPE 表达式是单个字符，这里设置为反斜杠 '\'
+            Ok(format!("({} LIKE ? ESCAPE '\\')", name_col))
         }
     }
 }
@@ -344,8 +345,11 @@ pub fn search_index(
         _ => "relevance",
     };
 
-    // 先决定是否可以使用 FTS5：仅在默认大小写/变音设置，且查询中不含通配符时启用
-    let use_fts = match_config_fts_compatible(&parsed.config) && !expr_has_glob(expr);
+    // 先决定是否可以使用 FTS5：
+    // 仅在默认大小写/变音设置，且查询中不含通配符时启用。
+    // folder: / file: 只是类型过滤修饰符，其余文本查询规则保持一致。
+    let has_glob = expr_has_glob(expr);
+    let use_fts = match_config_fts_compatible(&parsed.config) && !has_glob;
 
     // 先收集候选行，再用统一的内存逻辑做高亮与兜底校验
     let mut candidates: Vec<(String, String, String, i32)> = Vec::new();
@@ -365,10 +369,10 @@ pub fn search_index(
                 fts_expr
             ));
 
-            // 使用显式编号的占位符，避免参数个数与占位符个数不一致
-            let mut sql = String::from(
-                "SELECT url, path, name, is_dir FROM file_index_fts WHERE file_index_fts MATCH ?1 ",
-            );
+            // 使用显式编号的占位符，避免参数个数与占位符个数不一致。
+            // 只在 name 列上做 FTS 匹配，保证「项目1 / folder: 项目1」都仅按名称命中。
+            let mut sql =
+                String::from("SELECT url, path, name, is_dir FROM file_index_fts WHERE name MATCH ?1 ");
             // 类型过滤（file:/folder:）
             match parsed.config.type_filter {
                 crate::search_query::TypeFilter::Both => {}
@@ -448,6 +452,9 @@ pub fn search_index(
 
         let mut params: Vec<Value> = Vec::new();
         let mut where_parts = Vec::new();
+
+        // 简化为只按名称列匹配：项目中原始语义即「仅按名称搜索」，
+        // folder:/file: 仅作为类型过滤修饰符。
         where_parts.push(build_sql_where_from_expr(
             expr,
             name_col,
@@ -501,17 +508,62 @@ pub fn search_index(
     let mut out = Vec::new();
     for (url, path, name, is_dir_int) in candidates {
         let is_dir = is_dir_int != 0;
-        let (matched, ranges) =
-            crate::search_query::parse_and_match(query, &name, is_dir, None)
-                .map_err(|e| format!("匹配失败: {}", e))?;
-        if !matched {
-            continue;
-        }
-        let segments = crate::search_query::ranges_to_segments(&name, &ranges);
+
+        // SQL 已经根据表达式完成了一次完整过滤，这里只用于生成名称高亮，
+        // 不再作为「命中与否」的二次裁决，以避免路径查询被按纯名称错误过滤。
+        let segments = match crate::search_query::parse_and_match(query, &name, is_dir, None) {
+            Ok((_matched, ranges)) => crate::search_query::ranges_to_segments(&name, &ranges),
+            Err(e) => {
+                append_debug_log(&format!(
+                    "[svnsearch][match] parse_and_match 失败，将退化为无高亮: {}",
+                    e
+                ));
+                crate::search_query::ranges_to_segments(&name, &[])
+            }
+        };
+
         out.push((url, path, is_dir, segments));
         if out.len() >= limit as usize {
             break;
         }
     }
     Ok(out)
+}
+
+/// 为本地开发环境生成一些伪造索引数据，便于测试中文搜索与 FTS 性能
+pub fn seed_dummy_dev_data() -> Result<(), String> {
+    let conn = open_db()?;
+    init_schema(&conn)?;
+
+    // 使用几个固定的「伪仓库 URL」，避免污染未来真实配置
+    let dev_urls = vec![
+        "dev://repo-中文测试-1".to_string(),
+        "dev://repo-中文测试-2".to_string(),
+    ];
+
+    for (idx, url) in dev_urls.iter().enumerate() {
+        // 先清理旧数据
+        clear_index(url)?;
+
+        // 构造若干包含中文名称的路径
+        let mut files: Vec<String> = Vec::new();
+        let base_prefix = format!("项目{}/模块", idx + 1);
+        let chinese_words = ["数据", "门户", "配置", "测试", "日志", "报表", "用户", "权限"];
+
+        // 大约生成几千条记录：目录 + 文件混合
+        for i in 0..50u32 {
+            let dir_path = format!("{}/目录{}/", base_prefix, i);
+            files.push(dir_path.clone());
+
+            for j in 0..50u32 {
+                let word = chinese_words[((i + j) as usize) % chinese_words.len()];
+                let file_path = format!("{}/文件{}_{}_{}.txt", dir_path, i, j, word);
+                files.push(file_path);
+            }
+        }
+
+        save_index(url, &files)?;
+    }
+
+    Ok(())
 }
