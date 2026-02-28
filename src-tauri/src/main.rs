@@ -6,12 +6,14 @@ use tauri::menu::MenuBuilder;
 use tauri::{Emitter, Manager};
 
 mod database;
+mod search_query;
 
 /// 创建一个在 Windows 下不弹出黑框的命令执行器。
 ///
 /// 说明：本应用在 Windows 上是 GUI 子系统（`windows_subsystem="windows"`），
 /// 当它启动 `svn.exe` 这类控制台程序时，系统会默认弹出一个控制台窗口。
 /// 通过设置 `CREATE_NO_WINDOW` 可以避免该黑框闪现。
+#[allow(unused_mut)]
 fn command_no_window<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
     let mut cmd = Command::new(program);
     #[cfg(target_os = "windows")]
@@ -30,11 +32,20 @@ pub struct SvnResult {
     error: Option<String>,
 }
 
-/// 搜索返回的条目（url + path）
+/// 名称分段（用于高亮渲染）
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NameSegment {
+    pub text: String,
+    pub highlight: bool,
+}
+
+/// 搜索返回的条目（url + path + 是否目录 + 名称分段高亮）
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IndexEntry {
     pub url: String,
     pub path: String,
+    pub is_dir: bool,
+    pub name_segments: Vec<NameSegment>,
 }
 
 /// 检测系统是否安装了 SVN 命令
@@ -153,24 +164,17 @@ fn fetch_svn_files(
     parse_svn_output(stdout)
 }
 
-/// 解析 SVN 输出，转换为文件路径列表
+/// 解析 SVN 输出，转换为路径列表（含文件与目录；目录以 / 结尾，会一并写入索引）
 fn parse_svn_output(output: String) -> Result<Vec<String>, String> {
-    let mut files = Vec::new();
-
+    let mut list = Vec::new();
     for line in output.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-
-        // SVN ls -R 输出格式：每行一个路径
-        // 可能包含目录（以 / 结尾）
-        if !line.ends_with('/') {
-            files.push(line.to_string());
-        }
+        list.push(line.to_string());
     }
-
-    Ok(files)
+    Ok(list)
 }
 
 /// 将索引保存到数据库（按仓库 URL）
@@ -191,14 +195,22 @@ fn clear_index(url: String) -> Result<(), String> {
     database::clear_index(&url)
 }
 
-/// 模糊搜索所有仓库的索引（path 包含关键词即命中）
+/// 搜索所有仓库的索引（按新语法仅匹配名称，返回条目及名称高亮分段）
 #[tauri::command]
 fn search_index(query: String, limit: Option<u32>) -> Result<Vec<IndexEntry>, String> {
     let limit = limit.unwrap_or(200);
-    let pairs = database::search_index(&query, limit)?;
-    Ok(pairs
+    let rows = database::search_index(&query, limit)?;
+    Ok(rows
         .into_iter()
-        .map(|(url, path)| IndexEntry { url, path })
+        .map(|(url, path, is_dir, segs)| IndexEntry {
+            url,
+            path,
+            is_dir,
+            name_segments: segs
+                .into_iter()
+                .map(|(text, highlight)| NameSegment { text, highlight })
+                .collect(),
+        })
         .collect())
 }
 

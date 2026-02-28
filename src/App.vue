@@ -28,9 +28,18 @@
           @click="copyPath(file)"
           @contextmenu.prevent="openContextMenu($event, file)"
         >
-          <div class="file-icon">📄</div>
+          <div class="file-icon">{{ file.is_dir ? '📁' : '📄' }}</div>
           <div class="file-info">
-            <div class="file-name">{{ getFileName(file.path) }}</div>
+            <div class="file-name">
+              <template v-if="file.name_segments && file.name_segments.length">
+                <span
+                  v-for="(seg, i) in file.name_segments"
+                  :key="'n-' + i"
+                  :class="{ highlight: seg.highlight }"
+                >{{ seg.text }}</span>
+              </template>
+              <template v-else>{{ getFileName(file.path) }}</template>
+            </div>
             <div class="file-path">{{ file.path }}</div>
             <div class="file-repo">仓库：{{ file.title }}</div>
           </div>
@@ -156,7 +165,7 @@
               </button>
               
               <span v-if="fileCount > 0" class="file-count">
-                已索引 {{ fileCount }} 个文件
+                已索引 {{ fileCount }} 条（含目录）
               </span>
             </div>
           </div>
@@ -197,7 +206,7 @@
         <div v-if="isLoading" class="progress-bar">
           <div class="progress-inner" :style="{ width: progress + '%' }"></div>
         </div>
-        <span v-else-if="fileCount > 0">已索引 {{ fileCount }} 个文件</span>
+        <span v-else-if="fileCount > 0">已索引 {{ fileCount }} 条（含目录）</span>
       </div>
     </div>
   </div>
@@ -543,7 +552,13 @@ async function performSearch() {
     filteredFiles.value = (entries || []).map((e) => {
       const p = urlToProfile.get(e.url)
       const title = p?.title || p?.name || e.url
-      return { url: e.url, path: e.path, title }
+      return {
+        url: e.url,
+        path: e.path,
+        title,
+        is_dir: e.is_dir === true,
+        name_segments: e.name_segments || []
+      }
     })
   } catch (error) {
     if (token !== latestSearchToken) return
@@ -961,6 +976,13 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.file-name .highlight,
+.file-path .highlight {
+  background: rgba(102, 126, 234, 0.45);
+  border-radius: 2px;
+  padding: 0 1px;
 }
 
 .file-path {
