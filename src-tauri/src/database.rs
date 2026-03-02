@@ -345,182 +345,87 @@ pub fn search_index(
         _ => "relevance",
     };
 
-    // 先决定是否可以使用 FTS5：
-    // - 仅在默认大小写/变音设置，且查询中不含通配符，且未开启 path: 时启用；
-    // - 对包含中文（CJK）的查询：先尝试 FTS，如果完全没有结果，再自动回退到 LIKE 子串匹配，
-    //   既保留中文整词/长词查询的性能，又保证“学习环境”“学习环”等前缀/子串场景有兜底结果。
-    let has_glob = expr_has_glob(expr);
-    let has_cjk = query.chars().any(|c| {
-        // 基本 CJK 统一表意文字块 + 扩展 A（覆盖常见简繁中文）
-        (c >= '\u{4E00}' && c <= '\u{9FFF}') || (c >= '\u{3400}' && c <= '\u{4DBF}')
-    });
-    let use_fts =
-        match_config_fts_compatible(&parsed.config) && !has_glob && !parsed.config.path_only;
+    // 统一走普通表 + LIKE 查询，不再使用 FTS5：
+    // - 避免 FTS 对中文分词带来的命中偏差；
+    // - 保证「任意中文子串 / 前缀」行为一致。
+    let _has_glob = expr_has_glob(expr);
 
-    // 先收集候选行，再用统一的内存逻辑做高亮与兜底校验
+    // 收集候选行，再用统一的内存逻辑做高亮
     let mut candidates: Vec<(String, String, String, i32)> = Vec::new();
 
-    // 优先尝试 FTS，失败或不兼容时回退到 LIKE 路径
-    let mut used_fts = false;
+    // 统一使用 LIKE 逻辑：
+    // - 默认按名称列匹配（name/name_fold/name_ascii_fold）
+    // - 当配置为 path_only（path: 修饰符）时，按完整 URL+path 匹配
+    let name_col = if parsed.config.case_sensitive {
+        "name"
+    } else if parsed.config.ascii_fold_only {
+        "name_ascii_fold"
+    } else {
+        "name_fold"
+    };
+    let full_path_col = "url || '/' || path";
 
-    if use_fts {
-        let fts_result: Result<(), String> = (|| {
-            append_debug_log(&format!(
-                "[svnsearch][fts] 即将走 FTS 搜索，原始 query=\"{}\", config={:?}",
-                query, parsed.config
-            ));
-            let fts_expr = build_fts_match_from_expr(expr);
-            append_debug_log(&format!(
-                "[svnsearch][fts] 构造出的 FTS match 表达式: {}",
-                fts_expr
-            ));
+    let mut params: Vec<Value> = Vec::new();
+    let mut where_parts = Vec::new();
 
-            // 使用显式编号的占位符，避免参数个数与占位符个数不一致。
-            // 只在 name 列上做 FTS 匹配，保证「项目1 / folder: 项目1」都仅按名称命中。
-            let mut sql =
-                String::from("SELECT url, path, name, is_dir FROM file_index_fts WHERE name MATCH ?1 ");
-            // 类型过滤（file:/folder:）
-            match parsed.config.type_filter {
-                crate::search_query::TypeFilter::Both => {}
-                crate::search_query::TypeFilter::FileOnly => sql.push_str("AND is_dir = 0 "),
-                crate::search_query::TypeFilter::FolderOnly => sql.push_str("AND is_dir = 1 "),
-            }
-            // 取一个略大于前端 limit 的上限，避免高亮兜底后不足
-            let db_limit: i64 = ((limit as i64) * 5).clamp(limit as i64, 10_000);
-            // 按排序键决定 ORDER BY
-            match sort_key {
-                "name" => sql.push_str("ORDER BY name COLLATE NOCASE, url, path "),
-                "path" => sql.push_str("ORDER BY path COLLATE NOCASE "),
-                "type" => sql.push_str("ORDER BY is_dir DESC, name COLLATE NOCASE, url, path "),
-                _ => sql.push_str("ORDER BY bm25(file_index_fts), url, path "),
-            }
-            sql.push_str("LIMIT ?2");
-            // 日志中记录完整 SQL（含 ORDER BY 和 LIMIT）
-            append_debug_log(&format!(
-                "[svnsearch][fts] FTS SQL: {} | limit={} (db_limit={})",
-                sql, limit, db_limit
-            ));
-
-            let mut stmt = conn.prepare(&sql).map_err(|e| {
-                let msg = e.to_string();
-                append_debug_log(&format!(
-                    "[svnsearch][fts] 准备 FTS 搜索语句失败: {} | sql={}",
-                    msg, sql
-                ));
-                msg
-            })?;
-            let rows = stmt
-                .query_map(rusqlite::params![fts_expr, db_limit], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, i32>(3)?,
-                    ))
-                })
-                .map_err(|e| {
-                    let msg = e.to_string();
-                    append_debug_log(&format!(
-                        "[svnsearch][fts] FTS 搜索失败: {} | sql={} | match_expr={} | limit={}",
-                        msg, sql, fts_expr, db_limit
-                    ));
-                    msg
-                })?;
-            for row in rows {
-                candidates.push(row.map_err(|e| {
-                    let msg = e.to_string();
-                    append_debug_log(&format!("[svnsearch][fts] 读取行失败: {}", msg));
-                    msg
-                })?);
-            }
-            Ok(())
-        })();
-
-        if let Err(e) = fts_result {
-            append_debug_log(&format!(
-                "[svnsearch][fts] FTS 分支出现错误，将回退到 LIKE 搜索: {}",
-                e
-            ));
-        } else {
-            used_fts = true;
+    if parsed.config.path_only {
+        // path: 修饰符：对完整 URL+path 做匹配，支持 path 片段/层级搜索
+        where_parts.push(build_sql_where_from_expr(
+            expr,
+            full_path_col,
+            &mut params,
+            &parsed.config,
+        )?);
+    } else {
+        // 默认：仅按名称匹配
+        where_parts.push(build_sql_where_from_expr(
+            expr,
+            name_col,
+            &mut params,
+            &parsed.config,
+        )?);
+    }
+    match parsed.config.type_filter {
+        crate::search_query::TypeFilter::Both => {}
+        crate::search_query::TypeFilter::FileOnly => {
+            where_parts.push("(is_dir = 0)".to_string())
+        }
+        crate::search_query::TypeFilter::FolderOnly => {
+            where_parts.push("(is_dir = 1)".to_string())
         }
     }
 
-    if !used_fts || (has_cjk && candidates.is_empty()) {
-        // 回退到原有 LIKE 逻辑：
-        // - 默认按名称列匹配（name/name_fold/name_ascii_fold）
-        // - 当配置为 path_only（path: 修饰符）时，按完整 URL+path 匹配
-        let name_col = if parsed.config.case_sensitive {
-            "name"
-        } else if parsed.config.ascii_fold_only {
-            "name_ascii_fold"
-        } else {
-            "name_fold"
-        };
-        let full_path_col = "url || '/' || path";
+    let db_limit: i64 = ((limit as i64) * 50).clamp(500, 50_000);
+    params.push(Value::Integer(db_limit));
 
-        let mut params: Vec<Value> = Vec::new();
-        let mut where_parts = Vec::new();
+    let mut sql = format!(
+        "SELECT url, path, name, is_dir FROM file_index WHERE {} ",
+        where_parts.join(" AND ")
+    );
+    match sort_key {
+        "name" => sql.push_str("ORDER BY name COLLATE NOCASE, url, path "),
+        "path" => sql.push_str("ORDER BY path COLLATE NOCASE "),
+        "type" => sql.push_str("ORDER BY is_dir DESC, name COLLATE NOCASE, url, path "),
+        // LIKE 路径下没有 bm25，只能按 URL+path 做稳定排序
+        _ => sql.push_str("ORDER BY url, path "),
+    }
+    sql.push_str("LIMIT ?");
 
-        if parsed.config.path_only {
-            // path: 修饰符：对完整 URL+path 做匹配，支持 path 片段/层级搜索
-            where_parts.push(build_sql_where_from_expr(
-                expr,
-                full_path_col,
-                &mut params,
-                &parsed.config,
-            )?);
-        } else {
-            // 默认：仅按名称匹配
-            where_parts.push(build_sql_where_from_expr(
-                expr,
-                name_col,
-                &mut params,
-                &parsed.config,
-            )?);
-        }
-        match parsed.config.type_filter {
-            crate::search_query::TypeFilter::Both => {}
-            crate::search_query::TypeFilter::FileOnly => {
-                where_parts.push("(is_dir = 0)".to_string())
-            }
-            crate::search_query::TypeFilter::FolderOnly => {
-                where_parts.push("(is_dir = 1)".to_string())
-            }
-        }
-
-        let db_limit: i64 = ((limit as i64) * 50).clamp(500, 50_000);
-        params.push(Value::Integer(db_limit));
-
-        let mut sql = format!(
-            "SELECT url, path, name, is_dir FROM file_index WHERE {} ",
-            where_parts.join(" AND ")
-        );
-        match sort_key {
-            "name" => sql.push_str("ORDER BY name COLLATE NOCASE, url, path "),
-            "path" => sql.push_str("ORDER BY path COLLATE NOCASE "),
-            "type" => sql.push_str("ORDER BY is_dir DESC, name COLLATE NOCASE, url, path "),
-            // 回退路径下没有 bm25，只能按 URL+path 做稳定排序
-            _ => sql.push_str("ORDER BY url, path "),
-        }
-        sql.push_str("LIMIT ?");
-
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| format!("准备搜索语句失败: {}", e))?;
-        let rows = stmt
-            .query_map(rusqlite::params_from_iter(params.iter()), |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i32>(3)?,
-                ))
-            })
-            .map_err(|e| format!("搜索失败: {}", e))?;
-        for row in rows {
-            candidates.push(row.map_err(|e| format!("读取行失败: {}", e))?);
-        }
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("准备搜索语句失败: {}", e))?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i32>(3)?,
+            ))
+        })
+        .map_err(|e| format!("搜索失败: {}", e))?;
+    for row in rows {
+        candidates.push(row.map_err(|e| format!("读取行失败: {}", e))?);
     }
 
     let mut out = Vec::new();
