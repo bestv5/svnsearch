@@ -331,6 +331,17 @@ pub fn search_index(
         return Ok(Vec::new());
     }
 
+    // 简单前缀模式：当整条查询以 file:/folder:/path: 开头，且不包含 OR/NOT/短语等复杂语法时，
+    // 按用户约定的新规则直接基于名称/完整路径构造 SQL，而不走通用语法解析。
+    let trimmed = query.trim_start();
+    let lowered = trimmed.to_lowercase();
+    let has_complex_op = trimmed.contains('|') || trimmed.contains('!') || trimmed.contains('"');
+    if !has_complex_op
+        && (lowered.starts_with("file:") || lowered.starts_with("folder:") || lowered.starts_with("path:"))
+    {
+        return search_index_simple_prefix(&conn, trimmed, limit, sort_by);
+    }
+
     let parsed = crate::search_query::parse(query)?;
     let expr = match &parsed.expr {
         Some(e) => e,
@@ -450,6 +461,215 @@ pub fn search_index(
             break;
         }
     }
+    Ok(out)
+}
+
+/// 处理以 file:/folder:/path: 开头的简单查询规则
+fn search_index_simple_prefix(
+    conn: &Connection,
+    raw_query: &str,
+    limit: u32,
+    sort_by: Option<&str>,
+) -> Result<Vec<(String, String, bool, Vec<(String, bool)>)>, String> {
+    let sort_key = match sort_by.unwrap_or("relevance") {
+        "name" => "name",
+        "path" => "path",
+        "type" => "type",
+        _ => "relevance",
+    };
+
+    let trimmed = raw_query.trim_start();
+    let lowered = trimmed.to_lowercase();
+
+    // 解析前缀类型与剩余查询串
+    let (kind, rest) = if lowered.starts_with("file:") {
+        ("file", &trimmed[5..])
+    } else if lowered.starts_with("folder:") {
+        ("folder", &trimmed[7..])
+    } else if lowered.starts_with("path:") {
+        ("path", &trimmed[5..])
+    } else {
+        ("other", trimmed)
+    };
+
+    if kind == "other" {
+        return Ok(Vec::new());
+    }
+
+    let q = rest.trim();
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // 统一将路径中的反斜杠替换为正斜杠，以适配 SVN 路径的存储形式
+    let q_path_normalized = q.replace('\\', "/");
+
+    append_debug_log(&format!(
+        "[svnsearch][prefix] raw_query=\"{}\", kind={}, q=\"{}\", q_path_normalized=\"{}\"",
+        raw_query, kind, q, q_path_normalized
+    ));
+
+    let full_path_col = "url || '/' || path";
+    let mut where_parts: Vec<String> = Vec::new();
+    let mut params: Vec<Value> = Vec::new();
+
+    match kind {
+        "file" => {
+            // 仅匹配文件
+            where_parts.push("(is_dir = 0)".to_string());
+
+            let has_sep = q_path_normalized.contains('/');
+            if has_sep {
+                // 视为按完整路径匹配
+                let like_pat = format!("%{}%", like_escape_literal(&q_path_normalized));
+                params.push(Value::Text(like_pat));
+                where_parts.push(format!("({} LIKE ? ESCAPE '\\')", full_path_col));
+            } else {
+                // 视为按名称匹配（使用折叠后的 name_fold 做不区分大小写模糊匹配）
+                let folded = fold_name_for_db(q);
+                let like_pat = format!("%{}%", like_escape_literal(&folded));
+                params.push(Value::Text(like_pat));
+                where_parts.push("(name_fold LIKE ? ESCAPE '\\')".to_string());
+            }
+        }
+        "folder" => {
+            // 仅匹配目录：
+            // - 如果只有一个词：整串按完整路径匹配；
+            // - 如果有空格：空格视为 AND 操作符，
+            //   前半部分用于路径匹配，最后一个词用于目录名称匹配。
+            where_parts.push("(is_dir = 1)".to_string());
+
+            let parts: Vec<&str> = q_path_normalized.split_whitespace().collect();
+            if parts.len() <= 1 {
+                // 只有路径关键字：按完整路径模糊匹配
+                let like_pat = format!("%{}%", like_escape_literal(&q_path_normalized));
+                params.push(Value::Text(like_pat));
+                where_parts.push(format!("({} LIKE ? ESCAPE '\\')", full_path_col));
+            } else {
+                let path_part = parts[..parts.len() - 1].join(" ").trim().to_string();
+                let name_part = parts[parts.len() - 1].trim();
+
+                if !path_part.is_empty() {
+                    let like_pat = format!("%{}%", like_escape_literal(&path_part));
+                    params.push(Value::Text(like_pat));
+                    where_parts.push(format!("({} LIKE ? ESCAPE '\\')", full_path_col));
+                }
+
+                if !name_part.is_empty() {
+                    let folded = fold_name_for_db(name_part);
+                    let like_pat = format!("%{}%", like_escape_literal(&folded));
+                    params.push(Value::Text(like_pat));
+                    where_parts.push("(name_fold LIKE ? ESCAPE '\\')".to_string());
+                }
+            }
+        }
+        "path" => {
+            // path: 规则：路径 + 文件名拆开匹配，结果仅返回文件
+            where_parts.push("(is_dir = 0)".to_string());
+
+            // 按最后一个 / 切分
+            let mut last_sep: Option<usize> = None;
+            for (idx, ch) in q_path_normalized.char_indices() {
+                if ch == '/' {
+                    last_sep = Some(idx);
+                }
+            }
+
+            if let Some(idx) = last_sep {
+                let path_part = q_path_normalized[..idx].trim();
+                let name_part = q_path_normalized[idx + 1..].trim();
+
+                if !path_part.is_empty() {
+                    let like_pat = format!("%{}%", like_escape_literal(path_part));
+                    params.push(Value::Text(like_pat));
+                    where_parts.push(format!("({} LIKE ? ESCAPE '\\')", full_path_col));
+                }
+
+                if !name_part.is_empty() {
+                    let folded = fold_name_for_db(name_part);
+                    let like_pat = format!("%{}%", like_escape_literal(&folded));
+                    params.push(Value::Text(like_pat));
+                    where_parts.push("(name_fold LIKE ? ESCAPE '\\')".to_string());
+                }
+            } else {
+                // 没有分隔符时，仅按名称匹配
+                let folded = fold_name_for_db(q);
+                let like_pat = format!("%{}%", like_escape_literal(&folded));
+                params.push(Value::Text(like_pat));
+                where_parts.push("(name_fold LIKE ? ESCAPE '\\')".to_string());
+            }
+        }
+        _ => {}
+    }
+
+    if where_parts.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let db_limit: i64 = ((limit as i64) * 50).clamp(500, 50_000);
+    params.push(Value::Integer(db_limit));
+
+    let mut sql = format!(
+        "SELECT url, path, name, is_dir FROM file_index WHERE {} ",
+        where_parts.join(" AND ")
+    );
+
+    match sort_key {
+        "name" => sql.push_str("ORDER BY name COLLATE NOCASE, url, path "),
+        "path" => sql.push_str("ORDER BY path COLLATE NOCASE "),
+        "type" => sql.push_str("ORDER BY is_dir DESC, name COLLATE NOCASE, url, path "),
+        _ => sql.push_str("ORDER BY url, path "),
+    }
+    sql.push_str("LIMIT ?");
+
+    append_debug_log(&format!(
+        "[svnsearch][prefix] SQL=\"{}\", params_len={}, limit={} (db_limit={})",
+        sql,
+        params.len(),
+        limit,
+        db_limit
+    ));
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("准备前缀搜索语句失败: {}", e))?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i32>(3)?,
+            ))
+        })
+        .map_err(|e| format!("前缀搜索失败: {}", e))?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        let (url, path, name, is_dir_int) =
+            row.map_err(|e| format!("读取前缀搜索结果行失败: {}", e))?;
+        let is_dir = is_dir_int != 0;
+
+        let segments =
+            match crate::search_query::parse_and_match(raw_query, &name, is_dir, None) {
+                Ok((_matched, ranges)) => {
+                    crate::search_query::ranges_to_segments(&name, &ranges)
+                }
+                Err(e) => {
+                    append_debug_log(&format!(
+                        "[svnsearch][prefix] parse_and_match 失败，将退化为无高亮: {}",
+                        e
+                    ));
+                    crate::search_query::ranges_to_segments(&name, &[])
+                }
+            };
+
+        out.push((url, path, is_dir, segments));
+        if out.len() >= limit as usize {
+            break;
+        }
+    }
+
     Ok(out)
 }
 
