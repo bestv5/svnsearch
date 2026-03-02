@@ -316,6 +316,12 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
             let menu = MenuBuilder::new(&handle)
+                .cut()
+                .copy()
+                .paste()
+                .separator()
+                .select_all()
+                .separator()
                 .text("open-settings", "设置")
                 .quit_with_text("退出")
                 .build()
