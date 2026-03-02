@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::process::Command;
-use tauri::menu::MenuBuilder;
+use tauri::menu::{Menu, SubmenuBuilder};
 use tauri::{Emitter, Manager};
 
 mod database;
@@ -315,16 +315,36 @@ fn main() {
     tauri::Builder::default()
         .setup(|app| {
             let handle = app.handle().clone();
-            let menu = MenuBuilder::new(&handle)
+            // macOS 顶部菜单栏要求根节点只能包含子菜单，这里按通用惯例构建「应用」「编辑」两个子菜单：
+            // - 应用：关于 / 设置 / 退出
+            // - 编辑：撤销 / 重做 / 剪切 / 复制 / 粘贴 / 全选
+            let menu = Menu::new(&handle).map_err(|e| e.to_string())?;
+
+            // 应用菜单：放在编辑菜单之前，更符合常见顺序
+            let app_menu = SubmenuBuilder::new(&handle, "应用")
+                .about(None)
+                .separator()
+                .text("open-settings", "设置…")
+                .separator()
+                .quit()
+                .build()
+                .map_err(|e| e.to_string())?;
+
+            // 编辑菜单：Undo / Redo / Cut / Copy / Paste / Select All
+            let edit_menu = SubmenuBuilder::new(&handle, "编辑")
+                .undo()
+                .redo()
+                .separator()
                 .cut()
                 .copy()
                 .paste()
                 .separator()
                 .select_all()
-                .separator()
-                .text("open-settings", "设置")
-                .quit_with_text("退出")
                 .build()
+                .map_err(|e| e.to_string())?;
+
+            menu.append(&app_menu)
+                .and_then(|_| menu.append(&edit_menu))
                 .map_err(|e| e.to_string())?;
             let _ = app.set_menu(menu);
 
