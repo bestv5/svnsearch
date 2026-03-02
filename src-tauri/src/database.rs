@@ -346,10 +346,16 @@ pub fn search_index(
     };
 
     // 先决定是否可以使用 FTS5：
-    // 仅在默认大小写/变音设置，且查询中不含通配符，且未开启 path: 时启用。
-    // path: 语义为「按完整 URL+path 匹配」，目前仅通过 LIKE 路径实现。
+    // - 仅在默认大小写/变音设置，且查询中不含通配符，且未开启 path: 时启用；
+    // - 对包含中文（CJK）的查询：先尝试 FTS，如果完全没有结果，再自动回退到 LIKE 子串匹配，
+    //   既保留中文整词/长词查询的性能，又保证“学习环境”“学习环”等前缀/子串场景有兜底结果。
     let has_glob = expr_has_glob(expr);
-    let use_fts = match_config_fts_compatible(&parsed.config) && !has_glob && !parsed.config.path_only;
+    let has_cjk = query.chars().any(|c| {
+        // 基本 CJK 统一表意文字块 + 扩展 A（覆盖常见简繁中文）
+        (c >= '\u{4E00}' && c <= '\u{9FFF}') || (c >= '\u{3400}' && c <= '\u{4DBF}')
+    });
+    let use_fts =
+        match_config_fts_compatible(&parsed.config) && !has_glob && !parsed.config.path_only;
 
     // 先收集候选行，再用统一的内存逻辑做高亮与兜底校验
     let mut candidates: Vec<(String, String, String, i32)> = Vec::new();
@@ -440,7 +446,7 @@ pub fn search_index(
         }
     }
 
-    if !used_fts {
+    if !used_fts || (has_cjk && candidates.is_empty()) {
         // 回退到原有 LIKE 逻辑：
         // - 默认按名称列匹配（name/name_fold/name_ascii_fold）
         // - 当配置为 path_only（path: 修饰符）时，按完整 URL+path 匹配
