@@ -9,7 +9,7 @@
           type="text" 
           class="search-input"
           :placeholder="profiles.length > 0 ? '输入文件名或路径片段搜索（跨仓库）...' : '请先在“设置”中添加仓库并建立索引，然后回来搜索'"
-          :disabled="isLoading || isSearching"
+          :disabled="isLoading"
           @input="handleSearch"
         />
         <button class="btn-settings" type="button" title="设置" @click="goToSettings">⚙️</button>
