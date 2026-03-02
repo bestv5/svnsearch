@@ -346,10 +346,10 @@ pub fn search_index(
     };
 
     // 先决定是否可以使用 FTS5：
-    // 仅在默认大小写/变音设置，且查询中不含通配符时启用。
-    // folder: / file: 只是类型过滤修饰符，其余文本查询规则保持一致。
+    // 仅在默认大小写/变音设置，且查询中不含通配符，且未开启 path: 时启用。
+    // path: 语义为「按完整 URL+path 匹配」，目前仅通过 LIKE 路径实现。
     let has_glob = expr_has_glob(expr);
-    let use_fts = match_config_fts_compatible(&parsed.config) && !has_glob;
+    let use_fts = match_config_fts_compatible(&parsed.config) && !has_glob && !parsed.config.path_only;
 
     // 先收集候选行，再用统一的内存逻辑做高亮与兜底校验
     let mut candidates: Vec<(String, String, String, i32)> = Vec::new();
@@ -441,7 +441,9 @@ pub fn search_index(
     }
 
     if !used_fts {
-        // 回退到原有 LIKE + 折叠列逻辑
+        // 回退到原有 LIKE 逻辑：
+        // - 默认按名称列匹配（name/name_fold/name_ascii_fold）
+        // - 当配置为 path_only（path: 修饰符）时，按完整 URL+path 匹配
         let name_col = if parsed.config.case_sensitive {
             "name"
         } else if parsed.config.ascii_fold_only {
@@ -449,18 +451,28 @@ pub fn search_index(
         } else {
             "name_fold"
         };
+        let full_path_col = "url || '/' || path";
 
         let mut params: Vec<Value> = Vec::new();
         let mut where_parts = Vec::new();
 
-        // 简化为只按名称列匹配：项目中原始语义即「仅按名称搜索」，
-        // folder:/file: 仅作为类型过滤修饰符。
-        where_parts.push(build_sql_where_from_expr(
-            expr,
-            name_col,
-            &mut params,
-            &parsed.config,
-        )?);
+        if parsed.config.path_only {
+            // path: 修饰符：对完整 URL+path 做匹配，支持 path 片段/层级搜索
+            where_parts.push(build_sql_where_from_expr(
+                expr,
+                full_path_col,
+                &mut params,
+                &parsed.config,
+            )?);
+        } else {
+            // 默认：仅按名称匹配
+            where_parts.push(build_sql_where_from_expr(
+                expr,
+                name_col,
+                &mut params,
+                &parsed.config,
+            )?);
+        }
         match parsed.config.type_filter {
             crate::search_query::TypeFilter::Both => {}
             crate::search_query::TypeFilter::FileOnly => {
