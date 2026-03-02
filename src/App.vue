@@ -228,7 +228,9 @@
                 :class="{ active: profile.id === selectedProfileId }"
               >
                 <div class="profile-info" @click="useProfile(profile)">
-                  <div class="profile-name">{{ profile.name }}</div>
+                <div class="profile-name">
+                  {{ profile.title || profile.name || profile.url }}
+                </div>
                   <div class="profile-url">{{ profile.url }}</div>
                 </div>
                 <button 
@@ -487,13 +489,12 @@ function saveCurrentAsProfile() {
     ? `${svnUrl.value} (${username.value})`
     : svnUrl.value
 
-  // 先按当前选中的配置 id 查找，不存在则按 url+username 匹配
-  let existingIndex = profiles.value.findIndex((p) => p.id === selectedProfileId.value)
-  if (existingIndex === -1) {
-    existingIndex = profiles.value.findIndex(
-      (p) => p.url === svnUrl.value && p.username === username.value
-    )
-  }
+  // 仅按 url + username 判断是否为同一配置：
+  // - 相同 url+username 视为同一仓库配置，进行覆盖更新；
+  // - 不同则视为全新仓库，追加为新的配置项，而不是覆盖当前选中项。
+  const existingIndex = profiles.value.findIndex(
+    (p) => p.url === svnUrl.value && p.username === username.value
+  )
 
   const profileData = {
     id: existingIndex >= 0 ? profiles.value[existingIndex].id : Date.now().toString(),
